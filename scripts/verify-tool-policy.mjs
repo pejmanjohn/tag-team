@@ -19,7 +19,7 @@
  * docs/decisions/artifacts/g-port-stage4/tool-policy-{allowed,denied}.json.
  *
  * Run with Node >= 22.19:
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-tool-policy.mjs
+ *   node scripts/verify-tool-policy.mjs
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';

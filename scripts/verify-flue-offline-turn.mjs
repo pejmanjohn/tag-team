@@ -26,7 +26,7 @@
  *
  * Runs like the other Stage-4 verify scripts (a suitable Node >= 22.19 builds
  * and spawns the Flue server; the shared harness resolves a free port itself):
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
+ *   node scripts/verify-flue-offline-turn.mjs
  */
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

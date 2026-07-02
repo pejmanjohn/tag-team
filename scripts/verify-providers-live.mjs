@@ -15,9 +15,9 @@
  * On success, overwrites the STUB-labeled Stage-4 artifacts with LIVE ones:
  *   docs/decisions/artifacts/g-port-stage4/provider-{anthropic,workers-ai}-reply.md
  *
- * Typical invocation (Node >= 22.19; creds via env, never printed):
+ * Typical invocation (Node >= 22.19 on PATH; creds via env, never printed):
  *   set -a; source .env.slack.local; set +a
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-providers-live.mjs
+ *   node scripts/verify-providers-live.mjs
  */
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

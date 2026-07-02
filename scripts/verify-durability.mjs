@@ -28,7 +28,7 @@
  *      same implicit reply produces nothing (thread never started there).
  *
  * Run with Node >= 22.19:
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-durability.mjs
+ *   node scripts/verify-durability.mjs
  */
 import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -70,22 +70,22 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 ## Tests and verification
 
 ```bash
-# Full suite (typecheck + node --test). Lane B spawns the built Flue app, which
-# needs Node >= 22.19; on an older default Node, point the spawn at a newer one:
-FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test
+# Full suite (typecheck + node --test). Lane B spawns the built Flue app.
+# If your default node is older than 22.19, point the spawn at a newer binary:
+FLUE_NODE_BIN=/path/to/node npm test
 ```
 
 The suite is 34 tests: the 23 parity scenarios on the Flue lane (Lane B), the
 fake-Slack smoke tests, Slack formatting, the agent model resolver, and the
 turn-normalization/history-window unit tests.
 
-Offline, net-guarded evidence scripts (run with a Node >= 22.19 on `PATH`):
+Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`):
 
 ```bash
-PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
-PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-durability.mjs
-PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-tool-policy.mjs
-PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-providers.mjs
+node scripts/verify-flue-offline-turn.mjs
+node scripts/verify-durability.mjs
+node scripts/verify-tool-policy.mjs
+node scripts/verify-providers.mjs
 ```
 
 Each spawns the real app against a fake Slack/provider backend and asserts zero

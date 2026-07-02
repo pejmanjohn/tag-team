@@ -1,7 +1,12 @@
 {
   "name": "slack-flue",
   "version": "0.0.0",
-  "private": true,
+  "description": "Local-first Flue workspace assistant runtime for Slack.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/slack-flue/slack-flue.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.19.0"

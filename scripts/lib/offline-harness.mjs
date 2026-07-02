@@ -41,7 +41,7 @@ export function assertNodeVersion() {
       if ((parts[i] ?? 0) < MIN_NODE[i]) {
         throw new Error(
           `This script needs Node >= 22.19 to build/run Flue, but ${process.execPath} is ${raw}. ` +
-            `Run with PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/<name>.mjs`,
+            'Run it with Node >= 22.19 on PATH, or set FLUE_NODE_BIN to a Node >= 22.19 binary.',
         );
       }
       break;
