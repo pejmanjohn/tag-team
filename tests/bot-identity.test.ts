@@ -1,12 +1,24 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
+
+import { WebClient } from '@slack/web-api';
 
 import { defaultBotIdentity, IdentityStore } from '../src/config/identity.ts';
+import { checkIdentity, classifySlackIconUrl } from '../src/slack/identity-check.ts';
+import { FakeSlackBackend } from './parity/fake-slack.ts';
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const MANIFEST_PATH = join(REPO_ROOT, 'slack-app-manifest.json');
+const execFileAsync = promisify(execFile);
+
+const CUSTOM_ICON_URL = 'https://avatars.slack-edge.com/2026-07-02/T123_512.png';
+const DEFAULT_APP_ICON_URL = 'https://a.slack-edge.com/80588/img/plugins/app/bot_512.png';
+const DEFAULT_AVATAR_URL = 'https://a.slack-edge.com/80588/img/avatars/default_avatar.png';
+const UNKNOWN_ICON_URL = 'https://cdn.example.test/flue-assistant.png';
 
 test('IdentityStore returns the seeded install-wide avatar path', () => {
   const identity = new IdentityStore().get();
@@ -47,4 +59,106 @@ test('default avatar path resolves to a square PNG at least 512px wide', () => {
   const height = bytes.readUInt32BE(20);
   assert.equal(width, height);
   assert.ok(width >= 512, `expected avatar to be at least 512px square, got ${width}x${height}`);
+});
+
+test('Slack icon URL classifier separates custom, default, and unknown URLs', () => {
+  assert.equal(classifySlackIconUrl(CUSTOM_ICON_URL), 'custom');
+  assert.equal(classifySlackIconUrl(DEFAULT_APP_ICON_URL), 'default');
+  assert.equal(classifySlackIconUrl(DEFAULT_AVATAR_URL), 'default');
+  assert.equal(classifySlackIconUrl(UNKNOWN_ICON_URL), 'unknown');
+  assert.equal(classifySlackIconUrl('not a url'), 'unknown');
+});
+
+test('checkIdentity compares manifest name and icon state through fake Slack', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      identity: {
+        appId: 'A_FLUE',
+        botUserId: 'U_BOT',
+        displayName: 'Flue Assistant',
+        image512Url: CUSTOM_ICON_URL,
+      },
+    },
+  });
+  const server = await backend.listen();
+
+  try {
+    const client = new WebClient('xoxb-test', {
+      slackApiUrl: `${server.url}/api/`,
+      retryConfig: { retries: 0 },
+    });
+
+    const result = await checkIdentity(client, defaultBotIdentity);
+
+    assert.equal(result.name, 'match');
+    assert.equal(result.icon, 'custom');
+    assert.equal(result.details.appId, 'A_FLUE');
+    assert.equal(result.details.botUserId, 'U_BOT');
+    assert.equal(result.details.expectedName, 'Flue Assistant');
+    assert.equal(result.details.liveName, 'Flue Assistant');
+    assert.equal(result.details.iconUrl, CUSTOM_ICON_URL);
+    assert.equal(result.details.consoleUrl, 'https://api.slack.com/apps/A_FLUE/general');
+    assert.deepEqual(
+      backend.callsOfMethod('users.info').map((entry) => entry.body),
+      [{ user: 'U_BOT' }],
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test('verify-identity-live reports custom, default, and unknown icon states against fake Slack', async () => {
+  const backend = new FakeSlackBackend();
+  const server = await backend.listen();
+
+  async function run(iconUrl: string): Promise<{ code: number; output: string }> {
+    backend.configure({
+      slack: {
+        identity: {
+          appId: 'A_FLUE',
+          botUserId: 'U_BOT',
+          displayName: 'Flue Assistant',
+          image512Url: iconUrl,
+        },
+      },
+    });
+
+    try {
+      const result = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          SLACK_BOT_TOKEN: 'xoxb-test',
+          SLACK_API_URL: `${server.url}/api/`,
+        },
+      });
+      return { code: 0, output: result.stdout + result.stderr };
+    } catch (error) {
+      const failed = error as { code?: number; stdout?: string; stderr?: string };
+      return {
+        code: failed.code ?? 1,
+        output: `${failed.stdout ?? ''}${failed.stderr ?? ''}`,
+      };
+    }
+  }
+
+  try {
+    const custom = await run(CUSTOM_ICON_URL);
+    assert.equal(custom.code, 0);
+    assert.match(custom.output, /PASS\s+name/);
+    assert.match(custom.output, /PASS\s+icon/);
+    assert.match(custom.output, /https:\/\/api\.slack\.com\/apps\/A_FLUE\/general/);
+
+    const defaultIcon = await run(DEFAULT_APP_ICON_URL);
+    assert.equal(defaultIcon.code, 1);
+    assert.match(defaultIcon.output, /PASS\s+name/);
+    assert.match(defaultIcon.output, /FAIL\s+icon/);
+
+    const unknown = await run(UNKNOWN_ICON_URL);
+    assert.equal(unknown.code, 0);
+    assert.match(unknown.output, /PASS\s+name/);
+    assert.match(unknown.output, /UNKNOWN\s+icon/);
+  } finally {
+    await server.close();
+  }
 });

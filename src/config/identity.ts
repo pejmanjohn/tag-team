@@ -5,7 +5,11 @@ export const defaultBotIdentity: BotIdentityConfig = {
 };
 
 export class IdentityStore {
-  constructor(private readonly seed: BotIdentityConfig = defaultBotIdentity) {}
+  private readonly seed: BotIdentityConfig;
+
+  constructor(seed: BotIdentityConfig = defaultBotIdentity) {
+    this.seed = seed;
+  }
 
   get(): BotIdentityConfig {
     return this.seed;
