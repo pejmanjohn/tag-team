@@ -9,7 +9,7 @@
   "scripts": {
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "flue:build": "flue build --target cloudflare",
+    "flue:build": "flue build --target node",
     "dev:slack": "tsx src/server.ts"
   },
   "dependencies": {

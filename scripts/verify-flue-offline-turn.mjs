@@ -136,6 +136,10 @@ const child = spawn(FLUE_BIN, ['dev', '--target', 'node', '--port', String(PORT)
     SLACK_API_URL: `${fake.url}/api/`,
     LOCAL_STUB_URL: `${fake.url}/v1`,
     SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
+    // Stage 4 added src/db.ts (file-backed persistence). Pin an in-memory DB so
+    // this single-process offline gate stays deterministic across runs (no
+    // cross-run accumulation in ./tmp/flue.db).
+    FLUE_DB_PATH: ':memory:',
     NET_GUARD_LOG: netGuardLog,
     NODE_OPTIONS: `--import ${NET_GUARD}`,
   },

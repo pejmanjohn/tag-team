@@ -87,6 +87,12 @@ export const laneB: Lane = {
         // the channel → agent hop is deterministic regardless of Host header.
         FLUE_SELF_URL: baseUrl,
         FLUE_AGENT_API_TOKEN: 'parity-internal-token',
+        // Stage 4 added `src/db.ts` (file-backed persistence defaulting to
+        // ./tmp/flue.db). Every Lane B scenario spawns a fresh process, so pin
+        // an in-memory DB to keep each scenario's conversation state isolated
+        // (a shared file would cross-contaminate). `:memory:` matches the exact
+        // pre-db.ts default (in-memory SQLite, process lifetime).
+        FLUE_DB_PATH: ':memory:',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
