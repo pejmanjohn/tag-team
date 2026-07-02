@@ -1,0 +1,96 @@
+# slack-flue
+
+A Slack bot built on the [Flue](https://www.npmjs.com/package/@flue/runtime) agent
+runtime. It answers `@`-mentions, threaded replies, and DMs in Slack: it verifies
+the request signature, normalizes the event into a runnable turn, hydrates bounded
+channel/thread context, and drives a durable Flue agent that streams a final reply
+back into the thread. Per-channel assignments map a workspace + channel to a custom
+agent (instructions, model, allowed tools); an assignment-scoped `lookup_channel_brief`
+tool is exposed to agents that opt in.
+
+The product runs entirely on the **Flue lane**. The earlier hand-rolled harness has
+been deleted; the behavior it encoded is preserved by a lane-agnostic parity suite
+(`tests/parity/`) that now runs against the real Flue app (Lane B, 21 scenarios).
+
+## Architecture
+
+- `src/app.ts` — Flue app entry: registers providers (`cloudflare-workers-ai`,
+  optional `anthropic`, optional offline `local-stub`) and mounts the Flue router.
+- `src/channels/slack.ts` — Slack channel (`POST /channels/slack/events`): admission,
+  duplicate-claiming, context hydration, and the self-call that drives the agent.
+- `src/agents/slack-thread.ts` — durable agent (`POST /agents/slack-thread/:id`),
+  gated by a shared internal token; resolves the assignment's model + tools.
+- `src/slack/` — shared, lane-agnostic Slack modules kept verbatim from the contract:
+  turn normalization, thread keys, context hydration/formatting, message rendering,
+  presentation, claim store, internal auth.
+- `src/config/` — seeded agents, assignments, and channel briefs; assignment resolver.
+- `src/db.ts` — file-backed SQLite for the durable agent transcript (Node target).
+
+## Quickstart
+
+Requires Node >= 22.19 (see `.nvmrc`).
+
+```bash
+# Populate .env (loaded automatically by flue dev/build), then:
+flue dev --target node        # long-running dev server, default port 3583
+```
+
+Expose the port with a tunnel and point Slack's Events Request URL at
+`https://<tunnel-host>/channels/slack/events`. See `docs/play-slack.md` for the full
+real-Slack setup (scopes, event subscriptions, App Home, and the live checklist).
+
+Build the deployable Node artifact:
+
+```bash
+npm run flue:build            # -> dist/server.mjs (flue build --target node)
+```
+
+The Node target is the deploy target. `wrangler.jsonc` and the Cloudflare build path
+are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
+
+## Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SLACK_SIGNING_SECRET` | yes | Verifies inbound Slack request signatures. |
+| `SLACK_BOT_TOKEN` | yes | Bot token for outbound Slack Web API calls. |
+| `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
+| `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
+| `SLACK_FLUE_MODEL` | optional | Override the agent model specifier (`provider/model`). Defaults to the seeded `cloudflare-workers-ai/<model>`. |
+| `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
+| `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
+| `FLUE_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. |
+| `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_FLUE_MODEL=local-stub/<model>`). |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the catalog `anthropic` provider. |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
+
+`.env.example` lists the offline-safe defaults.
+
+## Tests and verification
+
+```bash
+# Full suite (typecheck + node --test). Lane B spawns the built Flue app, which
+# needs Node >= 22.19; on an older default Node, point the spawn at a newer one:
+FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test
+```
+
+The suite is 32 tests: the 21 parity scenarios on the Flue lane (Lane B), the
+fake-Slack smoke tests, Slack formatting, the agent model resolver, and the two
+turn-normalization/history-window unit tests.
+
+Offline, net-guarded evidence scripts (run with a Node >= 22.19 on `PATH`):
+
+```bash
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-durability.mjs
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-tool-policy.mjs
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-providers.mjs
+```
+
+Each spawns the real app against a fake Slack/provider backend and asserts zero
+external network traffic (`scripts/net-guard.mjs`).
+
+## More
+
+- `docs/play-slack.md` — end-to-end real-Slack setup and the live verification checklist.
+- `docs/decisions/` — decision records and the Stage 4 evidence artifacts.

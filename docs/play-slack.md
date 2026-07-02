@@ -1,6 +1,6 @@
 # Play With Slack Flue
 
-This is the smallest real Slack loop. By default it uses the deterministic provider so fixtures do not spend model quota. Set `SLACK_FLUE_WORKERS_AI_MODE=live` to call real Cloudflare Workers AI.
+This is the smallest real Slack loop, driven by the Flue lane with `flue dev --target node`. The agent's provider and model come from `SLACK_FLUE_MODEL` (default: the seeded Cloudflare Workers AI model under the registered `cloudflare-workers-ai` provider). For offline runs, point it at a local stub with `LOCAL_STUB_URL` and `SLACK_FLUE_MODEL=local-stub/<model>`.
 
 ## 1. Create a Slack app
 
@@ -33,26 +33,24 @@ Install the app to the workspace, then copy:
 ```bash
 export SLACK_SIGNING_SECRET="..."
 export SLACK_BOT_TOKEN="<bot-token>"
-export SLACK_BOT_USER_ID="U..." # optional; startup derives it with Slack auth.test if omitted
-export SLACK_FLUE_PROVIDER="workers-ai"
-export SLACK_FLUE_WORKERS_AI_MODE="live"
+export SLACK_BOT_USER_ID="U..." # optional; resolved via Slack auth.test if omitted
+# Default provider: the seeded Cloudflare Workers AI model.
 export CLOUDFLARE_ACCOUNT_ID="..."
 export CLOUDFLARE_API_TOKEN="..."
-export CLOUDFLARE_WORKERS_AI_MODEL="@cf/zai-org/glm-5.2"
-export PORT=8789
-npm run dev:slack
+# Or override the agent model directly, for example:
+# export SLACK_FLUE_MODEL="anthropic/claude-haiku-4-5"
+# export ANTHROPIC_API_KEY="..."
+flue dev --target node --port 8789
 ```
 
-For local UI capture only, set `SLACK_FLUE_PRESENTATION_DELAY_MS=1000` to hold each transient status long enough to observe it. Leave it unset for normal use; live Workers AI mode ignores the delay so Slack event handling is not intentionally slowed.
+`flue dev` is a long-running watch-mode dev server (default port 3583; `--port` overrides). It loads `.env` from the project root by default; pass `--env <path>` to select another env file, and shell-exported values always win. See the full env-var table in `README.md`.
 
 The server exposes:
 
-- `POST /slack/events`
-- `GET /health`
+- `POST /channels/slack/events` — the Slack Events endpoint.
+- `POST /agents/slack-thread/:id` — the durable agent, gated by the shared internal token (`FLUE_AGENT_API_TOKEN`); the channel makes this self-call, you do not call it directly.
 
-`npm run dev:slack` automatically loads `.env.slack.local` from the repo root when that ignored file exists. Values already exported in the shell take precedence over the file.
-
-The local server runs Slack event work asynchronously after signature verification, so Slack receives a fast HTTP acknowledgement before context hydration, provider calls, and final reply delivery finish. Fixture route tests can still exercise synchronous mode for deterministic assertions.
+After verifying the request signature, the Slack channel returns a fast HTTP acknowledgement and then runs the turn (context hydration, agent prompt, final delivery) as detached work, so Slack is acknowledged before the reply is produced.
 
 ## 3. Expose it to Slack
 
@@ -65,7 +63,7 @@ cloudflared tunnel --url http://localhost:8789
 Set Slack Events Request URL to:
 
 ```text
-https://<your-tunnel-host>/slack/events
+https://<your-tunnel-host>/channels/slack/events
 ```
 
 Slack should verify the URL challenge.
@@ -81,7 +79,7 @@ Subscribe to bot event:
 
 The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state.
 
-`SLACK_BOT_USER_ID` is required before generic `message.*` events are admitted. If it is not configured, startup derives it from the bot token with Slack `auth.test`. If that lookup fails, startup exits; direct route callers without a bot user id still acknowledge message events but ignore runnable thread/DM turns with `missing_bot_user_id` so an app-authored Slack message cannot start a reply loop.
+`SLACK_BOT_USER_ID` is required before generic `message.*` events are admitted. If it is not configured, the Slack channel resolves it once on the first event via Slack `auth.test`. If that lookup fails, it falls closed: message events are still acknowledged, but runnable thread/DM turns are ignored with `missing_bot_user_id` so an app-authored Slack message cannot start a reply loop.
 
 ## 4. Try it in Slack
 
@@ -153,8 +151,8 @@ Rollback: remove `message.channels`, `message.im`, and `message.app_home` subscr
 - Redact Signing Secret, Bot User OAuth Token, app-level tokens, and request headers before capturing screenshots or logs.
 - Pause for confirmation before enabling Agents & AI Apps, adding OAuth scopes, changing event subscriptions, or reinstalling the Slack app.
 - Keep `.env` and `.dev.vars` uncommitted.
-- Keep `SLACK_FLUE_WORKERS_AI_MODE=deterministic` for offline fixture work.
-- Use `SLACK_FLUE_WORKERS_AI_MODE=live` only when the ignored local env file has `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+- For offline work, drive the app through a local stub provider (`LOCAL_STUB_URL` + `SLACK_FLUE_MODEL=local-stub/<model>`), as the `scripts/verify-*.mjs` evidence scripts do — no external network.
+- Use a live provider (`cloudflare-workers-ai` via `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, or `anthropic` via `ANTHROPIC_API_KEY`) only from an ignored local env file.
 - If a general Cloudflare API token verifies but Workers AI returns `401 Authentication error`, the token likely lacks Workers AI run permission. For local-only smokes, `npx wrangler auth token` can provide a Wrangler auth token that works with the Workers AI REST endpoint; store it only in ignored local env files.
 - Treat Slack formatting as an adapter contract: providers should emit concise standard Markdown, and `src/slack/message-format.ts` decides how to post it to Slack.
 - Treat Slack history as per-turn ephemeral provider context in this prototype. Do not persist raw Slack messages beyond existing telemetry/degradation metadata.
