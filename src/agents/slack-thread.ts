@@ -14,7 +14,7 @@ export default defineAgent(async ({ id }) => {
     : [];
 
   return {
-    model: assignment.agent.defaultModels['workers-ai'],
+    model: `cloudflare-workers-ai/${assignment.agent.defaultModels['workers-ai']}`,
     instructions: [
       assignment.agent.instructions,
       `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,

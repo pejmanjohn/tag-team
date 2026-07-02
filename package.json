@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
     "typecheck": "tsc --noEmit",
