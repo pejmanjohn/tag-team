@@ -141,9 +141,10 @@ export const laneB: Lane = {
 };
 
 /**
- * Reuse Lane A's signer, then flatten the Request into a fetch init. The body
- * is read back from the signed Request verbatim (`request.text()`) so the exact
- * bytes the HMAC was computed over are what we POST — no re-serialization drift.
+ * Reuse the shared Slack v0 request signer (tests/parity/lane.ts, lane-agnostic),
+ * then flatten the Request into a fetch init. The body is read back from the
+ * signed Request verbatim (`request.text()`) so the exact bytes the HMAC was
+ * computed over are what we POST — no re-serialization drift.
  */
 async function signedInit(
   payload: unknown,

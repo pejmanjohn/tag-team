@@ -5,8 +5,10 @@ import { AddressInfo } from 'node:net';
  * In-memory fake Slack + fake Cloudflare Workers AI backend.
  *
  * A single core records every outbound request to a wire log and is dual-exposed:
- *   - `asFetch()` returns a `fetch`-compatible function (Lane A injects this).
- *   - `listen()` serves the SAME core over HTTP for a future HTTP-transport lane.
+ *   - `asFetch()` returns a `fetch`-compatible function, used directly by the
+ *     fake-slack unit tests (tests/parity-fake-slack.test.ts).
+ *   - `listen()` serves the SAME core over HTTP; Lane B (the real Flue app,
+ *     which only speaks HTTP) uses this.
  *
  * Everything asserted by the scenario suite is read back from `wireLog` via the
  * behavioral helpers (`finals`, `statusCalls`, `providerCalls`, `callsOfMethod`,
@@ -142,7 +144,8 @@ export class FakeSlackBackend {
 
   // Behavior knobs are mutable so the HTTP-transport backend can be
   // reconfigured between offline-verification scenarios via `POST /__config`
-  // (the fetch-injected Lane A still sets them once through the constructor).
+  // (the constructor still sets them once for backends used directly, e.g.
+  // via `asFetch()` in the fake-slack unit tests).
   private rejectSetStatus: boolean;
   private rejectStartStream: boolean;
   private failStopStreamOnce: boolean;
@@ -301,6 +304,12 @@ export class FakeSlackBackend {
       ) {
         pendingStreams.push({ entry, index });
       } else if (entry.method === 'chat.stopStream') {
+        // Deliberately NOT gated on `entry.ok`: S18 fails the first
+        // chat.stopStream call ({ ok:false, error:'timeout' }) and still
+        // expects that stream counted as one delivered final (the markdown
+        // content already reached the channel via startStream; a stopStream
+        // failure is a finalization-signal hiccup, not a lost delivery).
+        // Filtering this branch on `ok` would make S18 see zero finals.
         const start = pendingStreams.shift();
         if (start) {
           finals.push({

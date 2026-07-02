@@ -435,10 +435,13 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       // Slack delivers BOTH an app_mention and a message event for a single
       // in-thread mention: same channel + message ts, different event_ids. A
-      // correct app replies exactly once. The Flue lane claims
-      // msg:channel:messageTs (in addition to evt:event_id), so the companion
-      // is deduped. Lane A dedupes on event_id only, so it double-replies —
-      // that lane is frozen and registered as an expected-fail exception.
+      // correct app replies exactly once. This is a Lane B guarantee: Flue
+      // claims msg:channel:messageTs (in addition to evt:event_id), so the
+      // companion event is deduped and only one final is delivered. The old
+      // event_id-only hand-rolled lane (deleted) dedupes on event_id alone, so
+      // it would have double-replied here — that's the origin of the dual-key
+      // claim design. No exception is registered for this scenario (the
+      // exceptions registry is empty; see exceptions.ts).
       const fanoutTs = ROOT_THREAD_TS;
       const mention = appMention({
         event_id: 'Ev_FANOUT_MENTION',
@@ -483,6 +486,18 @@ export const scenarios: Scenario[] = [
       assert.ok(
         instance.backend.callsOfMethod('conversations.history').length >= 1,
         'expected the (failing) conversations.history read to be attempted',
+      );
+
+      // Degradation actually happened, not just implied: since the read
+      // failed, none of the fake's default channel-history rows (e.g.
+      // "recent channel context", see DEFAULT_HISTORY_MESSAGES in
+      // fake-slack.ts) can have reached the provider prompt.
+      const providerCalls = instance.backend.providerCalls();
+      const lastProvider = providerCalls.at(-1);
+      assert.ok(lastProvider);
+      assert.ok(
+        !JSON.stringify(lastProvider.body).includes('recent channel context'),
+        'degraded context must not include the (unreachable) default channel-history row',
       );
 
       const finals = instance.backend.finals();
