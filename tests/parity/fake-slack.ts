@@ -16,6 +16,20 @@ import { AddressInfo } from 'node:net';
 export const STUB_REPLY_MARKER = 'stub-reply::glm-parity-marker';
 export const RAW_PROVIDER_ERROR_MARKER = 'raw_provider_error_marker';
 
+/**
+ * Scripted tool-call triggers (Stage 4, part c). When a provider request's
+ * messages contain `TOOL_TRIGGER`, the openai-completions surface first emits a
+ * `lookup_channel_brief` tool call, then (once the tool result comes back) emits
+ * a final that echoes the tool result. `TOOL_TRIGGER_FORBIDDEN` (a superset
+ * string) forces the tool call to target `C_FORBIDDEN` so the app-enforced
+ * assignment scope denies it — the final then relays the honest denial.
+ */
+export const TOOL_TRIGGER = 'PLEASE_USE_CHANNEL_BRIEF_TOOL';
+export const TOOL_TRIGGER_FORBIDDEN = 'PLEASE_USE_CHANNEL_BRIEF_TOOL_FORBIDDEN';
+export const FORBIDDEN_TOOL_CHANNEL = 'C_FORBIDDEN';
+/** Default channel id the scripted (allowed) tool call targets. */
+export const DEFAULT_TOOL_CHANNEL = 'C_EXEC';
+
 export interface WireEntry {
   kind: 'slack' | 'provider';
   method: string;
@@ -62,6 +76,8 @@ export interface FakeSlackBehaviorConfig {
 export interface FakeProviderConfig {
   mode: 'ok' | 'http_500';
   replyText?: string;
+  /** channelId the scripted (allowed) tool call targets. Defaults to `C_EXEC`. */
+  toolChannelId?: string;
 }
 
 export interface FakeSlackBackendConfig {
@@ -102,6 +118,7 @@ export class FakeSlackBackend {
   private failStopStreamOnce: boolean;
   private providerMode: 'ok' | 'http_500';
   private replyText: string;
+  private toolChannelId: string;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -119,6 +136,7 @@ export class FakeSlackBackend {
     this.historyMessages = slack.historyMessages ?? DEFAULT_HISTORY_MESSAGES;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
+    this.toolChannelId = config.provider?.toolChannelId ?? DEFAULT_TOOL_CHANNEL;
 
     this.repliesPages.forEach((page, index) => {
       if (page.next_cursor) {
@@ -286,6 +304,9 @@ export class FakeSlackBackend {
       if (config.provider.replyText !== undefined) {
         this.replyText = config.provider.replyText;
       }
+      if (config.provider.toolChannelId !== undefined) {
+        this.toolChannelId = config.provider.toolChannelId;
+      }
     }
   }
 
@@ -312,20 +333,32 @@ export class FakeSlackBackend {
 
     const apiIndex = pathname.indexOf('/api/');
     const isSlack = apiIndex >= 0;
-    // OpenAI-completions surface for the Flue `local-stub` provider. The
-    // official OpenAI SDK posts to `<base>/chat/completions` and streams SSE.
+    // OpenAI-completions surface for the Flue `local-stub` and
+    // `cloudflare-workers-ai` providers. The official OpenAI SDK posts to
+    // `<base>/chat/completions` and streams SSE.
     const isOpenAiCompletions = !isSlack && pathname.endsWith('/chat/completions');
+    // Anthropic-messages surface (Stage 4, part b). The official Anthropic SDK
+    // posts to `<base>/v1/messages` and pi-ai parses the SSE event stream.
+    const isAnthropicMessages = !isSlack && pathname.endsWith('/v1/messages');
     const method = isSlack
       ? pathname.slice(apiIndex + '/api/'.length)
       : isOpenAiCompletions
         ? 'chat/completions'
-        : 'provider.run';
+        : isAnthropicMessages
+          ? 'messages'
+          : 'provider.run';
     const body = decodeWireBody(bodyString);
 
     this.wireLog.push({ kind: isSlack ? 'slack' : 'provider', method, url, body });
 
     if (!isSlack) {
-      return isOpenAiCompletions ? this.openAiCompletionsResponse() : this.providerResponse();
+      if (isOpenAiCompletions) {
+        return this.openAiCompletionsResponse(body);
+      }
+      if (isAnthropicMessages) {
+        return this.anthropicMessagesResponse();
+      }
+      return this.providerResponse();
     }
     return { status: 200, body: this.slackResponse(method, body) };
   }
@@ -387,11 +420,16 @@ export class FakeSlackBackend {
   }
 
   /**
-   * OpenAI chat-completions streaming response. The Flue `local-stub` provider
-   * uses the official OpenAI SDK with `stream: true`, so the reply is delivered
-   * as `text/event-stream` chunks terminated by `data: [DONE]`.
+   * OpenAI chat-completions streaming response. The Flue `local-stub` and
+   * `cloudflare-workers-ai` providers use the official OpenAI SDK with
+   * `stream: true`, so the reply is delivered as `text/event-stream` chunks
+   * terminated by `data: [DONE]`.
+   *
+   * When the request messages carry a scripted tool trigger (Stage 4, part c),
+   * the first response emits a `lookup_channel_brief` tool call and the second
+   * (once the tool result is in the messages) emits a final echoing the result.
    */
-  private openAiCompletionsResponse(): RouteResult {
+  private openAiCompletionsResponse(body: Record<string, unknown>): RouteResult {
     if (this.providerMode === 'http_500') {
       return {
         status: 500,
@@ -406,13 +444,132 @@ export class FakeSlackBackend {
       };
     }
 
+    const scripted = this.scriptedToolResponse(body);
+    if (scripted) {
+      return scripted;
+    }
+    return this.openAiTextStream(this.replyText);
+  }
+
+  /**
+   * If the conversation carries a scripted tool trigger, drive the two-step
+   * tool loop; otherwise return null so the caller emits a plain text reply.
+   */
+  private scriptedToolResponse(body: Record<string, unknown>): RouteResult | null {
+    const messages = Array.isArray(body.messages) ? (body.messages as Record<string, unknown>[]) : [];
+    const conversationText = messages.map((message) => messageText(message)).join('\n');
+    if (!conversationText.includes(TOOL_TRIGGER)) {
+      return null;
+    }
+
+    const toolResults = messages.filter((message) => message?.role === 'tool');
+    if (toolResults.length > 0) {
+      // Second call: the tool result is back. Echo it into the final so the
+      // wire shows the brief (allowed) or the honest denial (forbidden) — never
+      // a model-fabricated answer.
+      const relayed = toolResults.map((message) => messageText(message)).join('\n');
+      return this.openAiTextStream(`Channel brief lookup complete. Tool result: ${relayed}`);
+    }
+
+    // First call: emit a tool call. The forbidden trigger targets a channel the
+    // agent is not assigned to, so the app-enforced scope denies it.
+    const channelId = conversationText.includes(TOOL_TRIGGER_FORBIDDEN)
+      ? FORBIDDEN_TOOL_CHANNEL
+      : this.toolChannelId;
+    return this.openAiToolCallStream('lookup_channel_brief', { channelId });
+  }
+
+  /** OpenAI SSE stream carrying a single assistant text block. */
+  private openAiTextStream(text: string): RouteResult {
     const base = { id: 'chatcmpl-parity', object: 'chat.completion.chunk', created: 0, model: 'parity-stub' };
     const chunks: Record<string, unknown>[] = [
-      { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: this.replyText }, finish_reason: null }] },
+      { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }] },
       { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
       { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
     ];
     const rawBody = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
+    return { status: 200, contentType: 'text/event-stream', rawBody };
+  }
+
+  /** OpenAI SSE stream carrying a single function tool call. */
+  private openAiToolCallStream(name: string, args: Record<string, unknown>): RouteResult {
+    const base = { id: 'chatcmpl-parity', object: 'chat.completion.chunk', created: 0, model: 'parity-stub' };
+    const chunks: Record<string, unknown>[] = [
+      { ...base, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] },
+      {
+        ...base,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_stub_1',
+                  type: 'function',
+                  function: { name, arguments: JSON.stringify(args) },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      },
+      { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+      { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+    ];
+    const rawBody = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
+    return { status: 200, contentType: 'text/event-stream', rawBody };
+  }
+
+  /**
+   * Anthropic-messages streaming response (Stage 4, part b). pi-ai's anthropic
+   * client posts to `<base>/v1/messages` and parses the SSE event stream
+   * (`message_start` → `content_block_*` → `message_delta` → `message_stop`).
+   * Text-only; the tool loop runs through the openai-completions surface.
+   */
+  private anthropicMessagesResponse(): RouteResult {
+    if (this.providerMode === 'http_500') {
+      return {
+        status: 500,
+        contentType: 'application/json',
+        rawBody: JSON.stringify({
+          type: 'error',
+          error: { type: 'api_error', message: `${RAW_PROVIDER_ERROR_MARKER} upstream failure` },
+        }),
+      };
+    }
+
+    const events: Array<[string, Record<string, unknown>]> = [
+      [
+        'message_start',
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_stub',
+            type: 'message',
+            role: 'assistant',
+            model: 'anthropic-stub',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+      ],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+      [
+        'content_block_delta',
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: this.replyText } },
+      ],
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      [
+        'message_delta',
+        { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } },
+      ],
+      ['message_stop', { type: 'message_stop' }],
+    ];
+    const rawBody = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join('');
     return { status: 200, contentType: 'text/event-stream', rawBody };
   }
 
@@ -438,6 +595,27 @@ function postText(body: Record<string, unknown>): string {
 
 function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+/** Flatten an OpenAI-style chat message's textual content (string or blocks). */
+function messageText(message: Record<string, unknown>): string {
+  if (!message || typeof message !== 'object') {
+    return '';
+  }
+  const content = message.content;
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string'
+          ? (block as { text: string }).text
+          : '',
+      )
+      .join('\n');
+  }
+  return '';
 }
 
 function decodeWireBody(raw: string): Record<string, unknown> {
