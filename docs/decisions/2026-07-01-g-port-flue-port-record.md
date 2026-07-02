@@ -182,13 +182,29 @@ Node 22.14). The verify scripts are net-guarded (`scripts/net-guard.mjs` patches
 
 ## Follow-ups (honest)
 
-- **Durable claim store.** Dedupe and the implicit-reply session registry are still
-  **in-memory** (process lifetime) — the **same durability class as the old lane's**
-  Map-based dedupe. `db.ts` made the agent *transcript* durable, but a Slack
-  redelivery immediately after a restart could still re-run a turn. Durable dedupe
-  is a larger, separate change.
+- **Durable claim store — DONE 2026-07-02.** Dedupe claims and the joined-thread
+  registry now live in a SQLite state store (`SqliteSlackStateStore`,
+  `src/slack/claim-store.ts`) in a sibling file of the transcript DB
+  (`SLACK_STATE_DB_PATH`, default `<FLUE_DB_PATH>.state`), with TTL eviction
+  (claims 2h, threads 30d) bounding growth. Evidence: `scripts/verify-durability.mjs`
+  is now **10/10** — a byte-identical redelivery after SIGKILL+restart posts no new
+  final; a new-event_id twin with the same (channel, ts) posts no new final; a
+  mention-free thread reply IS admitted after restart (durable registry — new
+  capability); negative control on an untouched DB stays silent. `:memory:`
+  transcript runs get a `:memory:` state store, so the parity suite's isolation
+  semantics are unchanged (34/34 green). Multi-instance active-active remains out
+  of scope (single-owner routing per Flue's Node durability rules).
 - **Live-provider evidence is pending valid credentials.** Both provider replies are
-  STUBs today (CF token invalid, Anthropic key absent). The scripts are live-ready.
+  STUBs today (CF token invalid, Anthropic key absent). 2026-07-02 update:
+  `scripts/verify-providers-live.mjs` now runs the same fixture LIVE per provider
+  with a host-allowlisted net-guard (Slack stays on the loopback fake; live hits
+  are logged as proof) and rewrites the artifacts with LIVE provenance on success.
+  A wrangler OAuth token (`npx wrangler auth token`) was tried and **refuted**:
+  401 on both `/ai/run/*` and `/ai/v1/chat/completions` — a dashboard API token
+  with the Workers AI permission is required. Also fixed along the way: an
+  empty-string `CLOUDFLARE_WORKERS_AI_BASE_URL` was accepted as a base URL and
+  silently routed to `api.openai.com` (`??` → `||` in `src/app.ts`, caught by the
+  net-guard).
 - **The Cloudflare target variant would need work.** It is unbuildable by design
   because `db.ts` is node-only; a Cloudflare deploy would require moving `db.ts`
   behind the target (Cloudflare uses DO SQLite automatically) or gating it out.
@@ -196,8 +212,21 @@ Node 22.14). The verify scripts are net-guarded (`scripts/net-guard.mjs` patches
 - **Net-guard covers global `fetch` only.** The offline guarantee rests on patching
   `globalThis.fetch`; a dependency reaching the network through another mechanism
   (raw sockets, a native http agent) would not be caught by it.
-- **DM transcripts grow unbounded.** DM thread keys collapse to
-  `workspace:channel:dm`, so with the file-backed `db.ts` a DM channel is one
-  perpetual conversation whose transcript grows without bound into every provider
-  request; this needs a windowing/compaction policy review (Flue auto-compaction
-  may mitigate — unverified).
+- **DM transcripts grow unbounded — FIXED 2026-07-02 (payload), measured.**
+  Probe (`scripts/probe-dm-transcript.mjs`, 26 sequential DM turns against the
+  real built app with a recording provider): Flue's threshold auto-compaction
+  never fires for models with no catalog metadata — non-catalog models resolve
+  with `contextWindow: 0`, which the runtime treats as "unknown" — so the
+  provider payload grew perfectly linearly (+2 messages, +~5.5 KB per turn,
+  zero compaction in 26 turns). That structurally disabled compaction for the
+  production default `cloudflare-workers-ai/@cf/zai-org/glm-5.2`. Fix:
+  `src/app.ts` now declares a conservative `contextWindow: 32768` /
+  `maxTokens: 2048` on the `cloudflare-workers-ai` registration. Verified with
+  `PROBE_MODEL='cloudflare-workers-ai/@cf/zai-org/glm-5.2' node
+  scripts/probe-dm-transcript.mjs`: compaction fired at turn 23
+  (126,451 B / 46 msgs → 39,319 B / 15 msgs) and the payload stays bounded in a
+  sawtooth thereafter; all turns delivered finals; zero external traffic.
+  Remaining notes: the canonical-stream DB file is append-only (compaction
+  bounds the wire payload, not the file — retention is a separate concern), and
+  per-thread DM sessions (vs the `dm` sentinel key) remain an optional product
+  decision that compaction does not force.
