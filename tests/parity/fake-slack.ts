@@ -24,6 +24,17 @@ export interface WireEntry {
 }
 
 /**
+ * Internal route outcome. `body` is JSON-encoded; `rawBody` (with `contentType`)
+ * is written verbatim, used for the OpenAI SSE stream.
+ */
+interface RouteResult {
+  status: number;
+  body?: unknown;
+  rawBody?: string;
+  contentType?: string;
+}
+
+/**
  * One "final" answer as seen on the wire. Either a `chat.startStream`(markdown_text)
  * paired with a following `chat.stopStream`, or a final `chat.postMessage`.
  */
@@ -119,8 +130,14 @@ export class FakeSlackBackend {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const bodyString = init?.body == null ? '' : String(init.body);
-      const { status, body } = this.route(url, bodyString);
-      return Response.json(body, { status });
+      const result = this.route(url, bodyString);
+      if (result.rawBody !== undefined) {
+        return new Response(result.rawBody, {
+          status: result.status,
+          headers: { 'content-type': result.contentType ?? 'text/plain' },
+        });
+      }
+      return Response.json(result.body, { status: result.status });
     }) as typeof fetch;
   }
 
@@ -131,9 +148,14 @@ export class FakeSlackBackend {
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         const bodyString = Buffer.concat(chunks).toString('utf8');
-        const { status, body } = this.route(req.url ?? '/', bodyString);
-        res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(body));
+        const result = this.route(req.url ?? '/', bodyString);
+        if (result.rawBody !== undefined) {
+          res.writeHead(result.status, { 'content-type': result.contentType ?? 'text/plain' });
+          res.end(result.rawBody);
+        } else {
+          res.writeHead(result.status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(result.body));
+        }
       });
     });
     this.servers.push(server);
@@ -238,17 +260,24 @@ export class FakeSlackBackend {
     return finals;
   }
 
-  private route(url: string, bodyString: string): { status: number; body: unknown } {
+  private route(url: string, bodyString: string): RouteResult {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
     const apiIndex = pathname.indexOf('/api/');
     const isSlack = apiIndex >= 0;
-    const method = isSlack ? pathname.slice(apiIndex + '/api/'.length) : 'provider.run';
+    // OpenAI-completions surface for the Flue `local-stub` provider. The
+    // official OpenAI SDK posts to `<base>/chat/completions` and streams SSE.
+    const isOpenAiCompletions = !isSlack && pathname.endsWith('/chat/completions');
+    const method = isSlack
+      ? pathname.slice(apiIndex + '/api/'.length)
+      : isOpenAiCompletions
+        ? 'chat/completions'
+        : 'provider.run';
     const body = decodeWireBody(bodyString);
 
     this.wireLog.push({ kind: isSlack ? 'slack' : 'provider', method, url, body });
 
     if (!isSlack) {
-      return this.providerResponse();
+      return isOpenAiCompletions ? this.openAiCompletionsResponse() : this.providerResponse();
     }
     return { status: 200, body: this.slackResponse(method, body) };
   }
@@ -292,7 +321,7 @@ export class FakeSlackBackend {
     };
   }
 
-  private providerResponse(): { status: number; body: unknown } {
+  private providerResponse(): RouteResult {
     if (this.providerMode === 'http_500') {
       return {
         status: 500,
@@ -307,6 +336,36 @@ export class FakeSlackBackend {
       status: 200,
       body: { success: true, result: { response: this.replyText } },
     };
+  }
+
+  /**
+   * OpenAI chat-completions streaming response. The Flue `local-stub` provider
+   * uses the official OpenAI SDK with `stream: true`, so the reply is delivered
+   * as `text/event-stream` chunks terminated by `data: [DONE]`.
+   */
+  private openAiCompletionsResponse(): RouteResult {
+    if (this.providerMode === 'http_500') {
+      return {
+        status: 500,
+        contentType: 'application/json',
+        rawBody: JSON.stringify({
+          error: {
+            message: `${RAW_PROVIDER_ERROR_MARKER} upstream failure`,
+            type: 'server_error',
+            code: 500,
+          },
+        }),
+      };
+    }
+
+    const base = { id: 'chatcmpl-parity', object: 'chat.completion.chunk', created: 0, model: 'parity-stub' };
+    const chunks: Record<string, unknown>[] = [
+      { ...base, choices: [{ index: 0, delta: { role: 'assistant', content: this.replyText }, finish_reason: null }] },
+      { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { ...base, choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+    ];
+    const rawBody = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`;
+    return { status: 200, contentType: 'text/event-stream', rawBody };
   }
 
   private nextTs(): string {
