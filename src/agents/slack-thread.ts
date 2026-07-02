@@ -26,7 +26,7 @@ export default defineAgent(async ({ id }) => {
   };
   const assignment = resolveAssignmentFromThreadKey(id, stores);
   const tools = assignment.agent.allowedTools.includes('lookup_channel_brief')
-    ? [createLookupChannelBriefTool()]
+    ? [createLookupChannelBriefTool(assignment)]
     : [];
 
   return {
