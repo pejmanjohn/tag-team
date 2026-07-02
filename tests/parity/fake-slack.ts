@@ -31,6 +31,8 @@ export interface FinalOnWire {
   channel: string;
   threadTs: string;
   text: string;
+  /** The wireLog index of the call that delivered this final (lane-agnostic). */
+  index: number;
 }
 
 export interface RepliesPage {
@@ -205,21 +207,22 @@ export class FakeSlackBackend {
    */
   finals(): FinalOnWire[] {
     const finals: FinalOnWire[] = [];
-    const pendingStreams: WireEntry[] = [];
+    const pendingStreams: Array<{ entry: WireEntry; index: number }> = [];
 
-    for (const entry of this.wireLog) {
+    this.wireLog.forEach((entry, index) => {
       if (entry.kind !== 'slack') {
-        continue;
+        return;
       }
       if (entry.method === 'chat.startStream' && hasText(entry.body.markdown_text)) {
-        pendingStreams.push(entry);
+        pendingStreams.push({ entry, index });
       } else if (entry.method === 'chat.stopStream') {
         const start = pendingStreams.shift();
         if (start) {
           finals.push({
-            channel: String(start.body.channel ?? ''),
-            threadTs: String(start.body.thread_ts ?? ''),
-            text: String(start.body.markdown_text ?? ''),
+            channel: String(start.entry.body.channel ?? ''),
+            threadTs: String(start.entry.body.thread_ts ?? ''),
+            text: String(start.entry.body.markdown_text ?? ''),
+            index: start.index,
           });
         }
       } else if (entry.method === 'chat.postMessage' && isMarkdownPost(entry.body)) {
@@ -227,9 +230,10 @@ export class FakeSlackBackend {
           channel: String(entry.body.channel ?? ''),
           threadTs: String(entry.body.thread_ts ?? ''),
           text: postText(entry.body),
+          index,
         });
       }
-    }
+    });
 
     return finals;
   }
@@ -311,7 +315,7 @@ export class FakeSlackBackend {
   }
 }
 
-function isMarkdownPost(body: Record<string, unknown>): boolean {
+export function isMarkdownPost(body: Record<string, unknown>): boolean {
   return Array.isArray(body.blocks) && body.blocks.length > 0;
 }
 

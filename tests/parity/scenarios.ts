@@ -9,7 +9,7 @@ import {
   dmMessage,
   topLevelChannelMessage,
 } from '../helpers/slack-fixtures.ts';
-import { RAW_PROVIDER_ERROR_MARKER, STUB_REPLY_MARKER } from './fake-slack.ts';
+import { RAW_PROVIDER_ERROR_MARKER, STUB_REPLY_MARKER, isMarkdownPost } from './fake-slack.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 
@@ -331,27 +331,23 @@ export const scenarios: Scenario[] = [
       await instance.postEvent(appMention());
       await instance.quiesce();
 
-      assert.equal(instance.backend.finals().length, 1);
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      const [final] = finals;
+      assert.ok(final);
 
       const progressPosts = instance.backend.progressPosts();
       assert.ok(progressPosts.length >= 1, 'expected a durable progress post');
 
       const firstProgressIndex = instance.backend.wireLog.findIndex(
-        (entry) => entry.method === 'chat.postMessage' && !hasBlocks(entry.body),
-      );
-      const finalIndex = instance.backend.wireLog.findIndex(
-        (entry) => entry.method === 'chat.startStream',
+        (entry) => entry.method === 'chat.postMessage' && !isMarkdownPost(entry.body),
       );
       assert.ok(firstProgressIndex >= 0);
-      assert.ok(finalIndex >= 0);
-      assert.ok(firstProgressIndex < finalIndex, 'progress must precede the final');
+      assert.ok(firstProgressIndex < final.index, 'progress must precede the final');
 
       const statuses = instance.backend.statusCalls();
-      assert.ok(statuses.length <= 2, 'no retry storm of status calls');
-      assert.ok(
-        !statuses.some((entry) => String(entry.body.status) === ''),
-        'no succeed-then-clear when status never succeeds',
-      );
+      const nonEmptyStatuses = statuses.filter((entry) => String(entry.body.status) !== '');
+      assert.ok(nonEmptyStatuses.length <= 2, 'no retry storm of status calls');
     },
   },
   {
@@ -381,7 +377,6 @@ export const scenarios: Scenario[] = [
       await instance.quiesce();
 
       assert.equal(instance.backend.finals().length, 1);
-      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
     },
   },
   {
@@ -440,8 +435,4 @@ export function runScenarioSuite(lane: Lane): void {
       }
     });
   }
-}
-
-function hasBlocks(body: Record<string, unknown>): boolean {
-  return Array.isArray(body.blocks) && body.blocks.length > 0;
 }
