@@ -1,16 +1,28 @@
 #!/usr/bin/env node
 /**
- * Stage-2 gate: prove one full Slack turn works completely offline under
- * `flue dev --target node` with zero external traffic.
+ * Stage-2 gate: prove the Flue lane's full turn policy works completely offline
+ * under `flue dev --target node` with zero external traffic. This is the fast
+ * feedback loop for Task 2b; the parity suite (Stage 3) is the real gate.
+ *
+ * One `flue dev` process + one in-memory fake Slack/provider backend. The fake's
+ * behavior knobs are reconfigured in-process between scenarios (the same knobs
+ * are also exposed over `POST /__config` for the future Lane B adapter), and
+ * each scenario uses a distinct event id / message ts so the process-local claim
+ * store does not dedupe across scenarios.
  *
  * Checks:
  *   1. signed url_verification -> 200 + challenge echoed
  *   2. tampered signature      -> 401, no wire calls
- *   3. signed app_mention      -> 200, exactly ONE chat.postMessage final in
- *      C_EXEC thread 1782770400.000100 containing the stub reply marker
- *   4. NET_GUARD_LOG empty     -> zero external traffic
- *   5. direct POST to the internal agent endpoint without the internal
- *      token  -> 401 (proves the agent route is not reachable unauthenticated)
+ *   3. mention full turn       -> conversations.history (24h window), status
+ *      set then cleared, ONE streamed final (startStream+stopStream) carrying
+ *      the stub reply marker
+ *   4. status rejected         -> a durable plain progress post precedes the
+ *      final, final still delivered, no status retry storm
+ *   5. provider 500            -> ONE sanitized final (verbatim failure text, no
+ *      raw provider error marker), status cleared
+ *   6. NET_GUARD_LOG empty     -> zero external traffic across all scenarios
+ *   7. direct POST to the internal agent endpoint without the internal token
+ *      -> 401 (the agent route is not reachable unauthenticated)
  *
  * Run with Node >= 22.19 (flue requirement):
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-flue-offline-turn.mjs
@@ -35,16 +47,28 @@ const ROOT_THREAD_TS = '1782770400.000100';
 // Load the Stage-0 fake backend (TypeScript) through tsx's runtime loader.
 const { register } = await import('tsx/esm/api');
 const unregister = register();
-const { FakeSlackBackend, STUB_REPLY_MARKER } = await import(
+const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER } = await import(
   join(REPO_ROOT, 'tests', 'parity', 'fake-slack.ts')
 );
 unregister();
+
+const PROVIDER_FAILURE_TEXT =
+  'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-net-guard-')), 'external-hosts.log');
 
 const appMention = JSON.parse(
   readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'),
 );
+
+/** Clone the base mention fixture with per-scenario overrides (fresh dedupe keys). */
+function craftMention({ eventId, ts }) {
+  return {
+    ...appMention,
+    event_id: eventId,
+    event: { ...appMention.event, ts, event_ts: ts },
+  };
+}
 
 function signedHeaders(rawBody, { tamper = false } = {}) {
   const timestamp = Math.floor(Date.now() / 1000);
@@ -77,6 +101,18 @@ async function postSignedEvent(payload, opts = {}) {
     body = text;
   }
   return { status: response.status, body };
+}
+
+/** Poll the wire log until at least `minFinals` finals have landed (or timeout). */
+async function waitForFinals(minFinals, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (backend.finals().length >= minFinals) {
+      return backend.finals();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return backend.finals();
 }
 
 const results = [];
@@ -169,27 +205,110 @@ try {
     );
   }
 
-  // Check 3: signed app_mention drives one full offline turn.
+  // Check 3: signed app_mention drives one full offline turn — hydration,
+  // status set->clear, and a single streamed final with the stub marker.
   {
+    backend.reset();
+    backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'ok' } });
     const response = await postSignedEvent(appMention);
-    await backend.quiesce();
-    const posts = backend.callsOfMethod('chat.postMessage');
-    const finalPost = posts[0];
+    const finals = await waitForFinals(1, 15_000);
+    const [final] = finals;
+
+    const historyCalls = backend.callsOfMethod('conversations.history');
+    const history = historyCalls[0];
+    const windowSeconds = history
+      ? Math.round(Number(history.body.latest) - Number(history.body.oldest))
+      : -1;
+    const startStreams = backend
+      .callsOfMethod('chat.startStream')
+      .filter((entry) => typeof entry.body.markdown_text === 'string');
+    const stopStreams = backend.callsOfMethod('chat.stopStream');
+    const statuses = backend.statusCalls();
+    const nonEmpty = statuses.filter((entry) => String(entry.body.status) !== '');
+    const lastStatus = statuses.at(-1);
+
     const passed =
       response.status === 200 &&
-      posts.length === 1 &&
-      finalPost !== undefined &&
-      finalPost.body.channel === EXEC_CHANNEL &&
-      finalPost.body.thread_ts === ROOT_THREAD_TS &&
-      String(finalPost.body.text ?? '').includes(STUB_REPLY_MARKER);
+      finals.length === 1 &&
+      final !== undefined &&
+      final.channel === EXEC_CHANNEL &&
+      final.threadTs === ROOT_THREAD_TS &&
+      final.text.includes(STUB_REPLY_MARKER) &&
+      historyCalls.length === 1 &&
+      Number(history.body.limit) <= 50 &&
+      windowSeconds === 86_400 &&
+      startStreams.length === 1 &&
+      stopStreams.length === 1 &&
+      nonEmpty.length >= 1 &&
+      lastStatus !== undefined &&
+      String(lastStatus.body.status) === '';
     record(
-      'signed app_mention -> 200 + exactly one final chat.postMessage with stub marker',
+      'mention full turn -> history(24h) + status set/clear + one streamed final',
       passed,
-      `status=${response.status} posts=${posts.length} body=${JSON.stringify(finalPost?.body ?? null)}`,
+      `finals=${finals.length} history=${historyCalls.length} window=${windowSeconds}s ` +
+        `startStream=${startStreams.length} stopStream=${stopStreams.length} ` +
+        `nonEmptyStatus=${nonEmpty.length} lastStatus="${String(lastStatus?.body.status)}"`,
     );
   }
 
-  // Check 4: zero external traffic.
+  // Check 4: status rejection falls back to a durable progress post before the
+  // final and does not storm setStatus.
+  {
+    backend.reset();
+    backend.configure({ slack: { rejectSetStatus: true }, provider: { mode: 'ok' } });
+    await postSignedEvent(craftMention({ eventId: 'Ev_OFFLINE_REJECT', ts: '1782770910.000100' }));
+    const finals = await waitForFinals(1, 15_000);
+    const [final] = finals;
+
+    const progressPosts = backend.progressPosts();
+    const firstProgressIndex = backend.wireLog.findIndex(
+      (entry) => entry.method === 'chat.postMessage' && !isMarkdownBody(entry.body),
+    );
+    const nonEmpty = backend
+      .statusCalls()
+      .filter((entry) => String(entry.body.status) !== '');
+
+    const passed =
+      finals.length === 1 &&
+      final !== undefined &&
+      progressPosts.length >= 1 &&
+      firstProgressIndex >= 0 &&
+      firstProgressIndex < final.index &&
+      nonEmpty.length <= 2;
+    record(
+      'status rejected -> durable progress post precedes the final',
+      passed,
+      `finals=${finals.length} progressPosts=${progressPosts.length} ` +
+        `progressIndex=${firstProgressIndex} finalIndex=${final?.index} nonEmptyStatus=${nonEmpty.length}`,
+    );
+  }
+
+  // Check 5: provider 500 still delivers one sanitized final and clears status.
+  // Flue retries the 5xx a few times before failing, so allow a generous poll.
+  {
+    backend.reset();
+    backend.configure({ slack: { rejectSetStatus: false }, provider: { mode: 'http_500' } });
+    await postSignedEvent(craftMention({ eventId: 'Ev_OFFLINE_500', ts: '1782770920.000100' }));
+    const finals = await waitForFinals(1, 40_000);
+    const [final] = finals;
+    const lastStatus = backend.statusCalls().at(-1);
+
+    const passed =
+      finals.length === 1 &&
+      final !== undefined &&
+      final.text.includes(PROVIDER_FAILURE_TEXT) &&
+      !final.text.includes(RAW_PROVIDER_ERROR_MARKER) &&
+      lastStatus !== undefined &&
+      String(lastStatus.body.status) === '';
+    record(
+      'provider 500 -> one sanitized final, status cleared, no raw error leak',
+      passed,
+      `finals=${finals.length} sanitized=${final?.text.includes(PROVIDER_FAILURE_TEXT)} ` +
+        `rawLeak=${final?.text.includes(RAW_PROVIDER_ERROR_MARKER)} lastStatus="${String(lastStatus?.body.status)}"`,
+    );
+  }
+
+  // Check 6: zero external traffic across every scenario above.
   {
     const attempted = existsSync(netGuardLog) ? readFileSync(netGuardLog, 'utf8').trim() : '';
     record(
@@ -199,10 +318,9 @@ try {
     );
   }
 
-  // Check 5: the internal agent endpoint rejects direct callers that don't
-  // present the internal token (Finding 2 — the channel's self-call is
-  // signature-verified upstream on /channels/slack/events; this endpoint has
-  // no other gate, so it must reject unauthenticated requests on its own).
+  // Check 7: the internal agent endpoint rejects direct callers that don't
+  // present the internal token (the channel's self-call is signature-verified
+  // upstream on /channels/slack/events; this endpoint has no other gate).
   {
     const response = await fetch(`${BASE_URL}/agents/slack-thread/some-id`, {
       method: 'POST',
@@ -221,6 +339,11 @@ try {
 } finally {
   child.kill('SIGKILL');
   await backend.close();
+}
+
+/** A markdown chat.postMessage carries at least one block; a plain progress post does not. */
+function isMarkdownBody(body) {
+  return Array.isArray(body.blocks) && body.blocks.length > 0;
 }
 
 const failed = results.filter((result) => !result.passed);

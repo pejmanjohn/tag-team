@@ -33,7 +33,7 @@ export interface SlackWebApiContextClientOptions {
   maxPages?: number;
 }
 
-interface SlackWebApiMessage {
+export interface SlackWebApiMessage {
   type?: string;
   user?: string;
   text?: string;
@@ -51,8 +51,8 @@ interface SlackMessagesResponse {
   };
 }
 
-const DEFAULT_MAX_MESSAGES = 50;
-const DEFAULT_MAX_PAGES = 3;
+export const DEFAULT_MAX_MESSAGES = 50;
+export const DEFAULT_MAX_PAGES = 3;
 const SECONDS_PER_HOUR = 60 * 60;
 const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
 const SECONDS_PER_WEEK = 7 * SECONDS_PER_DAY;
@@ -223,7 +223,7 @@ export function computeChannelHistoryWindow(text: string, latest: string): Slack
   return computeHistoryWindow('channel_history', text, latest);
 }
 
-function computeHistoryWindow(
+export function computeHistoryWindow(
   mode: Exclude<SlackContextMode, 'thread'>,
   text: string,
   latest: string,
@@ -295,7 +295,7 @@ function computeHistoryWindow(
   };
 }
 
-function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
+export function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[] {
   return messages.flatMap((message) => {
     if (!message.user || !message.text || !message.text.trim() || !message.ts) {
       return [];
@@ -314,11 +314,11 @@ function toContextMessages(messages: SlackWebApiMessage[]): SlackContextMessage[
   });
 }
 
-function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
+export function orderMessages(messages: SlackContextMessage[]): SlackContextMessage[] {
   return [...messages].sort((left, right) => parseSlackTs(left.ts) - parseSlackTs(right.ts));
 }
 
-function ensureTriggerMessage(
+export function ensureTriggerMessage(
   messages: SlackContextMessage[],
   turn: NormalizedSlackTurn,
 ): SlackContextMessage[] {

@@ -3,11 +3,21 @@ import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
 import { AgentStore, AssignmentStore, resolveAssignment } from '../config/resolver.ts';
-import { InMemoryClaimStore, type SlackClaimStore } from '../slack/claim-store.ts';
+import type { ResolvedAssignment } from '../config/types.ts';
+import {
+  InMemoryClaimStore,
+  ThreadSessionRegistry,
+  type SlackClaimStore,
+} from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import type { NormalizedSlackTurn, SlackEventFixture } from '../slack/types.ts';
+import {
+  assembleSlackPrompt,
+  hydrateSlackContextViaWebClient,
+} from '../slack/web-client-context.ts';
+import { PROVIDER_FAILURE_TEXT, WebClientPresenter } from '../slack/web-client-presenter.ts';
 
 // Loopback-only hostnames: an origin derived from the inbound request's Host
 // header (see `resolveSelfBaseUrl`) is only trusted when it points back at
@@ -19,16 +29,17 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
  * load) lets the offline verification point `slackApiUrl` at a fake Slack, and
  * keeps the cloudflare build from binding a token at import time. The v8 client
  * appends the method to `slackApiUrl`, which must end with `/` (it self-corrects
- * if not).
+ * if not). `retryConfig` is pinned to no retries to match the hand-rolled lane's
+ * raw-fetch sinks (deterministic, no 30-minute backoff on a transient upstream).
  */
 let cachedClient: WebClient | undefined;
 export function getClient(): WebClient {
   if (!cachedClient) {
     const slackApiUrl = process.env.SLACK_API_URL;
-    cachedClient = new WebClient(
-      process.env.SLACK_BOT_TOKEN,
-      slackApiUrl ? { slackApiUrl } : {},
-    );
+    cachedClient = new WebClient(process.env.SLACK_BOT_TOKEN, {
+      retryConfig: { retries: 0 },
+      ...(slackApiUrl ? { slackApiUrl } : {}),
+    });
   }
   return cachedClient;
 }
@@ -39,15 +50,19 @@ const stores = {
 };
 
 const claimStore: SlackClaimStore = new InMemoryClaimStore();
+const sessionRegistry = new ThreadSessionRegistry();
 
 // Bot user id resolution: prefer the configured env, otherwise resolve once via
-// auth.test() and cache. On failure leave it undefined so message-family events
-// fail closed in normalization (matching the hand-rolled lane).
+// auth.test() and cache. An explicitly-empty SLACK_BOT_USER_ID means "no bot
+// user id, do not probe auth.test" — the clean knob for fail-closed scenarios
+// (S14). On auth.test failure leave it undefined so message-family events fail
+// closed in normalization (matching the hand-rolled lane).
 let botUserId: string | undefined;
 let botUserIdResolved = false;
 async function resolveBotUserId(): Promise<string | undefined> {
-  if (process.env.SLACK_BOT_USER_ID) {
-    return process.env.SLACK_BOT_USER_ID;
+  const configured = process.env.SLACK_BOT_USER_ID;
+  if (configured !== undefined) {
+    return configured === '' ? undefined : configured;
   }
   if (botUserIdResolved) {
     return botUserId;
@@ -85,8 +100,17 @@ export const channel = createSlackChannel({
     );
     if (normalization.status !== 'runnable') return;
     const turn = normalization.turn;
+    const threadKey = slackThreadKey(turn);
 
-    // c. Claim BOTH the event id and the (channel, message-ts) so the
+    // c. Implicit thread replies require a thread this process already started
+    //    (a prior mention/DM). An unknown thread key produces nothing on the
+    //    wire (S13) — this mirrors the hand-rolled lane's process-local session
+    //    gate. Checked before any claim so a dropped reply stays fully silent.
+    if (turn.source === 'implicit_thread_reply' && !sessionRegistry.has(threadKey)) {
+      return;
+    }
+
+    // d. Claim BOTH the event id and the (channel, message-ts) so the
     //    app_mention + message fan-out for a single mention replies once.
     const evtKey = `evt:${payload.event_id}`;
     const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
@@ -96,9 +120,10 @@ export const channel = createSlackChannel({
       return;
     }
 
-    // d. Gate on an enabled assignment (fail closed if unassigned).
+    // e. Gate on an enabled assignment (fail closed if unassigned).
+    let assignment: ResolvedAssignment;
     try {
-      resolveAssignment(turn.workspaceId, turn.channelId, stores);
+      assignment = resolveAssignment(turn.workspaceId, turn.channelId, stores);
     } catch (err) {
       claimStore.release(evtKey);
       claimStore.release(msgKey);
@@ -106,7 +131,7 @@ export const channel = createSlackChannel({
       return;
     }
 
-    // e. Capture the self-origin BEFORE detaching, then run the turn as a
+    // f. Capture the self-origin BEFORE detaching, then run the turn as a
     //    detached promise so the events callback returns a fast 200. Slack
     //    signatures don't cover the Host header, so an untrusted derived
     //    origin means we skip the turn rather than let a spoofed Host divert
@@ -118,8 +143,15 @@ export const channel = createSlackChannel({
       console.error('[slack-flue] rejected self-call: untrusted request origin');
       return;
     }
-    void runTurn(turn, selfBaseUrl).catch((err) => {
-      // Release on failure so a Slack retry can re-drive the turn.
+
+    // g. Mark this thread as started so its later implicit replies are admitted
+    //    (mentions and DMs both open a thread the app owns).
+    sessionRegistry.start(threadKey);
+
+    void runTurn(turn, assignment, selfBaseUrl).catch((err) => {
+      // Release on a genuine delivery failure so a Slack retry can re-drive the
+      // turn. A completed turn (including a delivered provider-failure final)
+      // returns normally and keeps its claim, so it never re-runs.
       claimStore.release(evtKey);
       claimStore.release(msgKey);
       console.error('[slack-flue] turn failed:', sanitizeError(err));
@@ -152,11 +184,69 @@ function resolveSelfBaseUrl(requestUrl: string): string | undefined {
 }
 
 /**
- * Minimal turn: prompt the durable agent over the app's own HTTP API and block
- * for the terminal result, then deliver it to the thread with a plain
- * `chat.postMessage`. Rich status/stream presentation is Task 2b.
+ * Full turn lifecycle for the Flue lane, at parity with the hand-rolled lane:
+ *   1. set Assistant status (or post a durable progress placeholder on reject),
+ *   2. hydrate the bounded Slack context per contextMode,
+ *   3. prompt the durable agent over the app's own authenticated HTTP API with
+ *      the trigger text + hydrated (bot-filtered) context rows,
+ *   4. stream the final (fallback to a markdown post), and clear status.
+ * A provider failure is delivered as the sanitized static final (no provider
+ * error text ever reaches Slack) and the turn still completes.
  */
-async function runTurn(turn: NormalizedSlackTurn, selfBaseUrl: string): Promise<void> {
+async function runTurn(
+  turn: NormalizedSlackTurn,
+  assignment: ResolvedAssignment,
+  selfBaseUrl: string,
+): Promise<void> {
+  const client = getClient();
+  const presenter = new WebClientPresenter(client, {
+    channelId: turn.channelId,
+    threadTs: turn.threadTs,
+    agentName: assignment.agent.name,
+    userId: turn.userId,
+    workspaceId: turn.workspaceId,
+  });
+
+  // 1. Visible work: set status; if it is rejected, post a durable progress
+  //    placeholder so the user still sees work in-flight before the final.
+  const statusSet = await presenter.setStatus('checking_context');
+  if (!statusSet) {
+    await presenter.postProgress(`${assignment.agent.name} is checking the Slack thread context.`);
+  }
+
+  // 2. Hydrate bounded context (degrades to current-message-only on failure).
+  const context = await hydrateSlackContextViaWebClient(client, turn);
+  const prompt = assembleSlackPrompt(turn, context);
+
+  // 3. Prompt the durable agent. A provider failure surfaces as a non-2xx
+  //    ?wait=result envelope; deliver the sanitized static final and clear.
+  await presenter.setStatus('generating_answer');
+  let text: string;
+  try {
+    text = await promptAgent(turn, prompt, selfBaseUrl);
+  } catch (err) {
+    console.error('[slack-flue] provider call failed:', sanitizeError(err));
+    await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
+    await presenter.clearStatus();
+    return;
+  }
+
+  // 4. Deliver the streamed final (fallback post handled by the presenter).
+  await presenter.deliverFinal(text, 'markdown');
+  await presenter.clearStatus();
+}
+
+/**
+ * Prompt the durable agent over the app's own HTTP API and block for the
+ * terminal result. Throws on a non-2xx (the ?wait=result typed error envelope a
+ * provider failure produces) or an empty result — the caller sanitizes both
+ * into the provider-failure final without exposing any envelope text to Slack.
+ */
+async function promptAgent(
+  turn: NormalizedSlackTurn,
+  message: string,
+  selfBaseUrl: string,
+): Promise<string> {
   const conversationKey = slackThreadKey(turn);
   const url =
     `${selfBaseUrl.replace(/\/$/, '')}` +
@@ -168,7 +258,7 @@ async function runTurn(turn: NormalizedSlackTurn, selfBaseUrl: string): Promise<
       'content-type': 'application/json',
       [INTERNAL_AGENT_TOKEN_HEADER]: INTERNAL_AGENT_TOKEN,
     },
-    body: JSON.stringify({ message: turn.text }),
+    body: JSON.stringify({ message }),
   });
   if (!response.ok) {
     throw new Error(`agent prompt failed: HTTP ${response.status}`);
@@ -179,12 +269,7 @@ async function runTurn(turn: NormalizedSlackTurn, selfBaseUrl: string): Promise<
   if (!text) {
     throw new Error('agent prompt returned no result text');
   }
-
-  await getClient().chat.postMessage({
-    channel: turn.channelId,
-    thread_ts: turn.threadTs,
-    text,
-  });
+  return text;
 }
 
 function extractResultText(result: unknown): string {

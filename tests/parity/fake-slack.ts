@@ -94,13 +94,16 @@ export const DEFAULT_HISTORY_MESSAGES: unknown[] = [
 export class FakeSlackBackend {
   readonly wireLog: WireEntry[] = [];
 
-  private readonly rejectSetStatus: boolean;
-  private readonly rejectStartStream: boolean;
-  private readonly failStopStreamOnce: boolean;
+  // Behavior knobs are mutable so the HTTP-transport backend can be
+  // reconfigured between offline-verification scenarios via `POST /__config`
+  // (the fetch-injected Lane A still sets them once through the constructor).
+  private rejectSetStatus: boolean;
+  private rejectStartStream: boolean;
+  private failStopStreamOnce: boolean;
+  private providerMode: 'ok' | 'http_500';
+  private replyText: string;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
-  private readonly providerMode: 'ok' | 'http_500';
-  private readonly replyText: string;
   private readonly cursorToIndex = new Map<string, number>();
 
   private tsCounter = 0;
@@ -260,8 +263,53 @@ export class FakeSlackBackend {
     return finals;
   }
 
+  /**
+   * Reconfigure behavior knobs at runtime (HTTP-transport lanes reuse one
+   * backend across scenarios). Merges the same shape as the constructor config.
+   */
+  configure(config: FakeSlackBackendConfig): void {
+    if (config.slack) {
+      if (config.slack.rejectSetStatus !== undefined) {
+        this.rejectSetStatus = config.slack.rejectSetStatus;
+      }
+      if (config.slack.rejectStartStream !== undefined) {
+        this.rejectStartStream = config.slack.rejectStartStream;
+      }
+      if (config.slack.failStopStreamOnce !== undefined) {
+        this.failStopStreamOnce = config.slack.failStopStreamOnce;
+      }
+    }
+    if (config.provider) {
+      if (config.provider.mode !== undefined) {
+        this.providerMode = config.provider.mode;
+      }
+      if (config.provider.replyText !== undefined) {
+        this.replyText = config.provider.replyText;
+      }
+    }
+  }
+
+  /** Clear the wire log and per-turn counters (keeps behavior config). */
+  reset(): void {
+    this.wireLog.length = 0;
+    this.tsCounter = 0;
+    this.stopStreamCalls = 0;
+  }
+
   private route(url: string, bodyString: string): RouteResult {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
+
+    // Control surface (never recorded to the wire log): reconfigure or reset the
+    // backend between HTTP-transport scenarios.
+    if (pathname === '/__config') {
+      this.configure(decodeWireBody(bodyString) as FakeSlackBackendConfig);
+      return { status: 200, body: { ok: true } };
+    }
+    if (pathname === '/__reset') {
+      this.reset();
+      return { status: 200, body: { ok: true } };
+    }
+
     const apiIndex = pathname.indexOf('/api/');
     const isSlack = apiIndex >= 0;
     // OpenAI-completions surface for the Flue `local-stub` provider. The
@@ -412,10 +460,21 @@ function decodeWireBody(raw: string): Record<string, unknown> {
   );
 }
 
-function coerceFormValue(value: string): string | number | boolean {
+function coerceFormValue(value: string): unknown {
   if (value === 'true') return true;
   if (value === 'false') return false;
   if (/^\d+$/.test(value)) return Number(value);
+  // Slack Web API clients form-encode complex arguments (e.g. `blocks`,
+  // `loading_messages`) as JSON strings; real Slack parses them back. Mirror
+  // that so `isMarkdownPost` sees `blocks` as an array under form transport.
+  const trimmed = value.trim();
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      return JSON.parse(trimmed) as unknown;
+    } catch {
+      // Not actually JSON — fall through to the raw string.
+    }
+  }
   return value;
 }
 
