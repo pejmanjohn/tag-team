@@ -19,6 +19,13 @@
  *   3. NEGATIVE CONTROL — server3 on a DIFFERENT fresh DB_B: the same follow-up
  *      turn's provider request must NOT contain the marker (no shared durable
  *      storage → no replay). This proves the assertion measures durability.
+ *   4. DURABLE CLAIMS + THREAD REGISTRY (SqliteSlackStateStore, sibling
+ *      `<db>.state` file): on yet another fresh process sharing DB_A,
+ *      (i) a byte-identical redelivery of T1's event_id posts NO new final;
+ *      (ii) a new-event_id message with T1's (channel, ts) posts NO new final;
+ *      (iii) an implicit (mention-free) thread reply IS admitted and answered —
+ *      the joined thread survived the restart. Negative control on DB_B: the
+ *      same implicit reply produces nothing (thread never started there).
  *
  * Run with Node >= 22.19:
  *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-durability.mjs
@@ -31,6 +38,7 @@ import {
   REPO_ROOT,
   assertNodeVersion,
   buildNodeServer,
+  delay,
   getFreePort,
   loadFake,
   postSignedEvent,
@@ -57,6 +65,28 @@ const results = [];
 function record(name, passed, detail) {
   results.push({ name, passed });
   log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+/** A signed mention-free channel thread reply (implicit continuation). */
+function threadReply({ eventId, ts, threadTs }) {
+  return {
+    token: 'verification-token-not-a-secret',
+    team_id: 'T_DEMO',
+    api_app_id: 'A_DEMO',
+    event_id: eventId,
+    event_time: 1782770400,
+    type: 'event_callback',
+    event: {
+      type: 'message',
+      channel_type: 'channel',
+      user: 'U_ALICE',
+      text: 'and what changed since the summary?',
+      ts,
+      channel: EXEC_CHANNEL,
+      event_ts: ts,
+      thread_ts: threadTs,
+    },
+  };
 }
 
 /** A signed app_mention in C_EXEC. `threadTs` set → threaded follow-up (same key). */
@@ -111,6 +141,10 @@ log(`fake backend listening at ${fake.url}`);
 const netGuardLog = join(mkdtempSync(join(tmpdir(), 'flue-dur-guard-')), 'external-hosts.log');
 const dbA = join(mkdtempSync(join(tmpdir(), 'flue-dur-dbA-')), 'flue.db');
 const dbB = join(mkdtempSync(join(tmpdir(), 'flue-dur-dbB-')), 'flue.db');
+// dbC is reserved for the thread-registry negative control: no turn ever runs
+// on it before the implicit reply (dbB already saw a mention with ROOT_TS as
+// its thread key, which would legitimately register the thread there).
+const dbC = join(mkdtempSync(join(tmpdir(), 'flue-dur-dbC-')), 'flue.db');
 
 let historyTranscript;
 try {
@@ -202,6 +236,69 @@ try {
       'NEGATIVE CONTROL: fresh DB → provider request does NOT contain the marker',
       finals.length === 1 && !providerHasMarker,
       `finals=${finals.length} markerLeaked=${providerHasMarker}`,
+    );
+  }
+
+  // --- Durable claims + registry: yet another fresh process on DB_A. ---
+  backend.reset();
+  {
+    const { child, eventsUrl } = await runServerTurn({
+      serverEntry,
+      fakeUrl: fake.url,
+      dbPath: dbA,
+      netGuardLog,
+      // Byte-identical redelivery of T1's event (same event_id, same ts).
+      payload: mention({ eventId: 'Ev_DUR_T1', ts: ROOT_TS }),
+    });
+    await delay(4000);
+    const afterRedelivery = backend.finals().length;
+    record(
+      'DURABLE CLAIMS: redelivered event_id after restart posts NO new final',
+      afterRedelivery === 0,
+      `finals=${afterRedelivery}`,
+    );
+
+    // New event_id, same (channel, message-ts): the msg: claim must hold.
+    const twin = await postSignedEvent(eventsUrl, mention({ eventId: 'Ev_DUR_TWIN', ts: ROOT_TS }));
+    await delay(4000);
+    const afterTwin = backend.finals().length;
+    record(
+      'DURABLE CLAIMS: new event_id with the same (channel, ts) posts NO new final',
+      twin.status === 200 && afterTwin === 0,
+      `ackStatus=${twin.status} finals=${afterTwin}`,
+    );
+
+    // Mention-free thread reply: the durable registry admits it post-restart.
+    await postSignedEvent(
+      eventsUrl,
+      threadReply({ eventId: 'Ev_DUR_IMPL', ts: '1782770700.000100', threadTs: ROOT_TS }),
+    );
+    const implicitFinals = await waitForFinals(backend, 1, 15_000);
+    await stopChild(child);
+    record(
+      'DURABLE REGISTRY: implicit thread reply IS admitted after restart (one final)',
+      implicitFinals.length === 1,
+      `finals=${implicitFinals.length}`,
+    );
+  }
+
+  // --- Registry negative control: implicit reply on untouched DB_C → silence. ---
+  backend.reset();
+  {
+    const { child } = await runServerTurn({
+      serverEntry,
+      fakeUrl: fake.url,
+      dbPath: dbC,
+      netGuardLog,
+      payload: threadReply({ eventId: 'Ev_DUR_IMPL_NEG', ts: '1782770800.000100', threadTs: ROOT_TS }),
+    });
+    await delay(4000);
+    const finals = backend.finals().length;
+    await stopChild(child);
+    record(
+      'NEGATIVE CONTROL: implicit reply on a DB whose thread never started posts NO final',
+      finals === 0,
+      `finals=${finals}`,
     );
   }
 

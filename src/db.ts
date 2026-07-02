@@ -5,8 +5,9 @@ import { sqlite } from '@flue/runtime/node';
 // Slack redelivery after a restart would re-run a turn and lose the thread's
 // conversation history. A file-backed adapter makes the agent's conversation
 // transcript survive restarts, so a second turn in the same thread replays the
-// prior turn from durable storage. (Claims and the session registry are NOT
-// durable — they live in process memory; see the claim-store follow-up.)
+// prior turn from durable storage. (Dedupe claims and the joined-thread
+// registry live in a sibling SQLite file — see SqliteSlackStateStore in
+// src/slack/claim-store.ts and SLACK_STATE_DB_PATH.)
 //
 // The path defaults to `./tmp/flue.db` (tmp/ is git-ignored). Override with
 // FLUE_DB_PATH — parity/offline harnesses pass `:memory:` for per-process

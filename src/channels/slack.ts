@@ -5,9 +5,10 @@ import { WebClient } from '@slack/web-api';
 import { AgentStore, AssignmentStore, resolveAssignment } from '../config/resolver.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
-  InMemoryClaimStore,
-  ThreadSessionRegistry,
+  SqliteSlackStateStore,
+  resolveStateDbPath,
   type SlackClaimStore,
+  type SlackThreadRegistry,
 } from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
@@ -49,8 +50,17 @@ const stores = {
   assignments: new AssignmentStore(),
 };
 
-const claimStore: SlackClaimStore = new InMemoryClaimStore();
-const sessionRegistry = new ThreadSessionRegistry();
+// Claims + thread registry are SQLite-backed (own file, sibling of the Flue
+// transcript DB) so a Slack redelivery right after a restart is still
+// suppressed and joined threads stay continuable across restarts. Constructed
+// lazily like getClient() so env is read at first event, not at import.
+let cachedState: SqliteSlackStateStore | undefined;
+function getStateStore(): SlackClaimStore & SlackThreadRegistry {
+  if (!cachedState) {
+    cachedState = new SqliteSlackStateStore(resolveStateDbPath());
+  }
+  return cachedState;
+}
 
 // Bot user id resolution: prefer the configured env, otherwise resolve once via
 // auth.test() and cache. An explicitly-empty SLACK_BOT_USER_ID means "no bot
@@ -101,12 +111,14 @@ export const channel = createSlackChannel({
     if (normalization.status !== 'runnable') return;
     const turn = normalization.turn;
     const threadKey = slackThreadKey(turn);
+    const state = getStateStore();
 
-    // c. Implicit thread replies require a thread this process already started
-    //    (a prior mention/DM). An unknown thread key produces nothing on the
-    //    wire (S13) — this mirrors the hand-rolled lane's process-local session
-    //    gate. Checked before any claim so a dropped reply stays fully silent.
-    if (turn.source === 'implicit_thread_reply' && !sessionRegistry.has(threadKey)) {
+    // c. Implicit thread replies require a thread this app already started (a
+    //    prior mention/DM). An unknown thread key produces nothing on the wire
+    //    (S13). With the file-backed state store the registry survives
+    //    restarts; `:memory:` keeps the old process-local semantics. Checked
+    //    before any claim so a dropped reply stays fully silent.
+    if (turn.source === 'implicit_thread_reply' && !state.has(threadKey)) {
       return;
     }
 
@@ -114,9 +126,9 @@ export const channel = createSlackChannel({
     //    app_mention + message fan-out for a single mention replies once.
     const evtKey = `evt:${payload.event_id}`;
     const msgKey = `msg:${turn.channelId}:${turn.messageTs}`;
-    if (!claimStore.claim(evtKey)) return;
-    if (!claimStore.claim(msgKey)) {
-      claimStore.release(evtKey);
+    if (!state.claim(evtKey)) return;
+    if (!state.claim(msgKey)) {
+      state.release(evtKey);
       return;
     }
 
@@ -125,8 +137,8 @@ export const channel = createSlackChannel({
     try {
       assignment = resolveAssignment(turn.workspaceId, turn.channelId, stores);
     } catch (err) {
-      claimStore.release(evtKey);
-      claimStore.release(msgKey);
+      state.release(evtKey);
+      state.release(msgKey);
       console.error('[slack-flue] no assignment for turn:', sanitizeError(err));
       return;
     }
@@ -138,8 +150,8 @@ export const channel = createSlackChannel({
     //    it (with the message content) to an attacker-controlled origin.
     const selfBaseUrl = resolveSelfBaseUrl(c.req.url);
     if (!selfBaseUrl) {
-      claimStore.release(evtKey);
-      claimStore.release(msgKey);
+      state.release(evtKey);
+      state.release(msgKey);
       console.error('[slack-flue] rejected self-call: untrusted request origin');
       return;
     }
@@ -150,14 +162,14 @@ export const channel = createSlackChannel({
     //    arrive while the root turn is still in flight, matching the old lane's
     //    session-created-before-provider-call semantics. A failed turn leaves
     //    the thread registered (only the claims are released, for retry).
-    sessionRegistry.start(threadKey);
+    state.start(threadKey);
 
     void runTurn(turn, assignment, selfBaseUrl).catch((err) => {
       // Release on a genuine delivery failure so a Slack retry can re-drive the
       // turn. A completed turn (including a delivered provider-failure final)
       // returns normally and keeps its claim, so it never re-runs.
-      claimStore.release(evtKey);
-      claimStore.release(msgKey);
+      state.release(evtKey);
+      state.release(msgKey);
       console.error('[slack-flue] turn failed:', sanitizeError(err));
     });
   },

@@ -60,6 +60,7 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
 | `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
 | `FLUE_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. |
+| `SLACK_STATE_DB_PATH` | optional | SQLite path for the durable dedupe claims + joined-thread registry. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_FLUE_MODEL=local-stub/<model>`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the catalog `anthropic` provider. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
@@ -74,8 +75,8 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test
 ```
 
-The suite is 32 tests: the 21 parity scenarios on the Flue lane (Lane B), the
-fake-Slack smoke tests, Slack formatting, the agent model resolver, and the two
+The suite is 34 tests: the 23 parity scenarios on the Flue lane (Lane B), the
+fake-Slack smoke tests, Slack formatting, the agent model resolver, and the
 turn-normalization/history-window unit tests.
 
 Offline, net-guarded evidence scripts (run with a Node >= 22.19 on `PATH`):
