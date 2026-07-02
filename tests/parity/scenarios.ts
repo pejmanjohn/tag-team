@@ -173,7 +173,12 @@ export const scenarios: Scenario[] = [
       assert.ok(turnTwoProvider);
       const serialized = JSON.stringify(turnTwoProvider.body);
       assert.ok(serialized.includes('prior thread detail'));
+      // Both filtered reply rows must be absent: the bot row exercises the
+      // `bot_id` half of the thread-context filter (it now carries a `user`, so
+      // only the `bot_id` guard can exclude it), the subtype row the `subtype`
+      // half.
       assert.ok(!serialized.includes('bot prior reply'));
+      assert.ok(!serialized.includes('subtype prior row'));
     },
   },
   {
@@ -458,6 +463,73 @@ export const scenarios: Scenario[] = [
       await instance.quiesce();
 
       assert.equal(instance.backend.finals().length, 1);
+    },
+  },
+  {
+    id: 'S22',
+    title: 'context read failure degrades to current-message context without blocking the final',
+    config: { slack: { failConversationReads: true } },
+    async run(instance) {
+      // The mention's channel_history hydration calls conversations.history,
+      // which the fake rejects with { ok:false } so the product WebClient throws
+      // mid-hydration. The turn must degrade to current-message-only context and
+      // still deliver its final (mirrors the deleted runner test "context read
+      // failures degrade to current-message context without blocking finals").
+      const response = await instance.postEvent(appMention());
+      assert.equal(response.status, 200);
+      await instance.quiesce();
+
+      // The failing read was actually exercised (not bypassed).
+      assert.ok(
+        instance.backend.callsOfMethod('conversations.history').length >= 1,
+        'expected the (failing) conversations.history read to be attempted',
+      );
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      const [final] = finals;
+      assert.ok(final);
+      assert.equal(final.channel, EXEC_CHANNEL);
+      assert.equal(final.threadTs, ROOT_THREAD_TS);
+      assert.ok(
+        final.text.includes(STUB_REPLY_MARKER),
+        'degraded-but-answered: the final still carries the provider stub reply',
+      );
+    },
+  },
+  {
+    id: 'S23',
+    title: 'final delivery failure releases the claim so a Slack retry re-drives exactly one final',
+    config: { slack: { failFinalDeliveryOnce: true } },
+    async run(instance) {
+      const event = appMention();
+
+      // First attempt: both final transports (startStream + markdown post) fail,
+      // so deliverFinal throws, runTurn throws, and the claim is released. No
+      // final reaches the wire.
+      const first = await instance.postEvent(event);
+      assert.equal(first.status, 200);
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.finals().length,
+        0,
+        'a fully-failed delivery must not count as a final on the wire',
+      );
+
+      // Slack retries the SAME signed event. Because the claim was released, the
+      // retry re-drives the turn; delivery now succeeds. Dedupe still prevents a
+      // second post, so exactly one final lands (mirrors the deleted runner test
+      // "delivery failure after provider success releases dedupe for retry").
+      const retry = await instance.postEvent(event);
+      assert.equal(retry.status, 200);
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      const [final] = finals;
+      assert.ok(final);
+      assert.equal(final.threadTs, ROOT_THREAD_TS);
+      assert.ok(final.text.includes(STUB_REPLY_MARKER));
     },
   },
 ];

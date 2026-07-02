@@ -35,6 +35,14 @@ export interface WireEntry {
   method: string;
   url: string;
   body: Record<string, unknown>;
+  /**
+   * Outcome of the call as the fake answered it: `false` when the response
+   * envelope was `{ ok:false }` (the real WebClient throws on these). Left
+   * `undefined` for provider calls. `finals()` uses it so a delivery that the
+   * fake rejected is NOT counted as a delivered final (a rejected markdown
+   * `chat.postMessage` never reaches the channel in real Slack).
+   */
+  ok?: boolean;
 }
 
 /**
@@ -69,6 +77,21 @@ export interface FakeSlackBehaviorConfig {
   rejectSetStatus?: boolean;
   rejectStartStream?: boolean;
   failStopStreamOnce?: boolean;
+  /**
+   * Make conversations.history AND conversations.replies return `{ ok:false }`
+   * so the product's WebClient throws during hydration. Exercises the
+   * context-read-failure degradation path (web-client-context.ts try/catch →
+   * current-message-only context; the turn still completes). Default false.
+   */
+  failConversationReads?: boolean;
+  /**
+   * Fail the FIRST final delivery at BOTH transports: the first chat.startStream
+   * and the first markdown chat.postMessage each return `{ ok:false }` (the
+   * WebClient throws on both), so deliverFinal fully fails and runTurn throws.
+   * Every subsequent delivery succeeds. Exercises the claim-release-on-delivery-
+   * failure + Slack-retry path. Default false.
+   */
+  failFinalDeliveryOnce?: boolean;
   repliesPages?: RepliesPage[];
   historyMessages?: unknown[];
 }
@@ -90,7 +113,14 @@ export const DEFAULT_REPLIES_PAGES: RepliesPage[] = [
   {
     messages: [
       { user: 'U_ALICE', text: 'root thread topic', ts: '1782770400.000100' },
-      { bot_id: 'B_OTHER', text: 'bot prior reply', ts: '1782770405.000100' },
+      // Carries `user` so it passes the `!message.user` guard in
+      // toContextMessages and is excluded ONLY by the `bot_id` filter
+      // (thread-context.ts:303) — the row S07 asserts must never reach the
+      // provider.
+      { user: 'U_BOTUSER', bot_id: 'B_OTHER', text: 'bot prior reply', ts: '1782770405.000100' },
+      // Human `user` but a non-message subtype: excluded by the `subtype` half
+      // of the same filter. S07 asserts this text is likewise absent.
+      { user: 'U_JOINER', subtype: 'channel_join', text: 'subtype prior row', ts: '1782770405.000200' },
     ],
     next_cursor: 'cursor_2',
   },
@@ -116,6 +146,8 @@ export class FakeSlackBackend {
   private rejectSetStatus: boolean;
   private rejectStartStream: boolean;
   private failStopStreamOnce: boolean;
+  private failConversationReads: boolean;
+  private failFinalDeliveryOnce: boolean;
   private providerMode: 'ok' | 'http_500';
   private replyText: string;
   private toolChannelId: string;
@@ -125,6 +157,10 @@ export class FakeSlackBackend {
 
   private tsCounter = 0;
   private stopStreamCalls = 0;
+  // One-shot latches for `failFinalDeliveryOnce`: the first startStream and the
+  // first markdown postMessage each fail once, then recover.
+  private finalStreamFailedOnce = false;
+  private finalPostFailedOnce = false;
   private servers: Server[] = [];
 
   constructor(config: FakeSlackBackendConfig = {}) {
@@ -132,6 +168,8 @@ export class FakeSlackBackend {
     this.rejectSetStatus = slack.rejectSetStatus ?? false;
     this.rejectStartStream = slack.rejectStartStream ?? false;
     this.failStopStreamOnce = slack.failStopStreamOnce ?? false;
+    this.failConversationReads = slack.failConversationReads ?? false;
+    this.failFinalDeliveryOnce = slack.failFinalDeliveryOnce ?? false;
     this.repliesPages = slack.repliesPages ?? DEFAULT_REPLIES_PAGES;
     this.historyMessages = slack.historyMessages ?? DEFAULT_HISTORY_MESSAGES;
     this.providerMode = config.provider?.mode ?? 'ok';
@@ -256,7 +294,11 @@ export class FakeSlackBackend {
       if (entry.kind !== 'slack') {
         return;
       }
-      if (entry.method === 'chat.startStream' && hasText(entry.body.markdown_text)) {
+      if (
+        entry.method === 'chat.startStream' &&
+        entry.ok !== false &&
+        hasText(entry.body.markdown_text)
+      ) {
         pendingStreams.push({ entry, index });
       } else if (entry.method === 'chat.stopStream') {
         const start = pendingStreams.shift();
@@ -268,7 +310,11 @@ export class FakeSlackBackend {
             index: start.index,
           });
         }
-      } else if (entry.method === 'chat.postMessage' && isMarkdownPost(entry.body)) {
+      } else if (
+        entry.method === 'chat.postMessage' &&
+        entry.ok !== false &&
+        isMarkdownPost(entry.body)
+      ) {
         finals.push({
           channel: String(entry.body.channel ?? ''),
           threadTs: String(entry.body.thread_ts ?? ''),
@@ -296,6 +342,12 @@ export class FakeSlackBackend {
       if (config.slack.failStopStreamOnce !== undefined) {
         this.failStopStreamOnce = config.slack.failStopStreamOnce;
       }
+      if (config.slack.failConversationReads !== undefined) {
+        this.failConversationReads = config.slack.failConversationReads;
+      }
+      if (config.slack.failFinalDeliveryOnce !== undefined) {
+        this.failFinalDeliveryOnce = config.slack.failFinalDeliveryOnce;
+      }
     }
     if (config.provider) {
       if (config.provider.mode !== undefined) {
@@ -315,6 +367,8 @@ export class FakeSlackBackend {
     this.wireLog.length = 0;
     this.tsCounter = 0;
     this.stopStreamCalls = 0;
+    this.finalStreamFailedOnce = false;
+    this.finalPostFailedOnce = false;
   }
 
   private route(url: string, bodyString: string): RouteResult {
@@ -349,7 +403,8 @@ export class FakeSlackBackend {
           : 'provider.run';
     const body = decodeWireBody(bodyString);
 
-    this.wireLog.push({ kind: isSlack ? 'slack' : 'provider', method, url, body });
+    const entry: WireEntry = { kind: isSlack ? 'slack' : 'provider', method, url, body };
+    this.wireLog.push(entry);
 
     if (!isSlack) {
       if (isOpenAiCompletions) {
@@ -360,7 +415,11 @@ export class FakeSlackBackend {
       }
       return this.providerResponse();
     }
-    return { status: 200, body: this.slackResponse(method, body) };
+    const slackBody = this.slackResponse(method, body);
+    // Record the outcome so `finals()` can tell a delivered final from one the
+    // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
+    entry.ok = slackBody.ok !== false;
+    return { status: 200, body: slackBody };
   }
 
   private slackResponse(method: string, body: Record<string, unknown>): Record<string, unknown> {
@@ -368,11 +427,22 @@ export class FakeSlackBackend {
       case 'assistant.threads.setStatus':
         return this.rejectSetStatus ? { ok: false, error: 'missing_scope' } : { ok: true };
       case 'chat.postMessage':
+        // Fail only the FIRST markdown (final) post under failFinalDeliveryOnce;
+        // plain progress posts and later finals go through.
+        if (this.failFinalDeliveryOnce && isMarkdownPost(body) && !this.finalPostFailedOnce) {
+          this.finalPostFailedOnce = true;
+          return { ok: false, error: 'internal_error' };
+        }
         return { ok: true, ts: this.nextTs() };
       case 'chat.startStream':
-        return this.rejectStartStream
-          ? { ok: false, error: 'missing_scope' }
-          : { ok: true, channel: body.channel, ts: this.nextTs() };
+        if (this.rejectStartStream) {
+          return { ok: false, error: 'missing_scope' };
+        }
+        if (this.failFinalDeliveryOnce && !this.finalStreamFailedOnce) {
+          this.finalStreamFailedOnce = true;
+          return { ok: false, error: 'internal_error' };
+        }
+        return { ok: true, channel: body.channel, ts: this.nextTs() };
       case 'chat.stopStream':
         if (this.failStopStreamOnce && this.stopStreamCalls === 0) {
           this.stopStreamCalls += 1;
@@ -381,9 +451,13 @@ export class FakeSlackBackend {
         this.stopStreamCalls += 1;
         return { ok: true };
       case 'conversations.replies':
-        return this.repliesResponse(body);
+        return this.failConversationReads
+          ? { ok: false, error: 'internal_error' }
+          : this.repliesResponse(body);
       case 'conversations.history':
-        return { ok: true, messages: this.historyMessages };
+        return this.failConversationReads
+          ? { ok: false, error: 'internal_error' }
+          : { ok: true, messages: this.historyMessages };
       case 'auth.test':
         return { ok: true, user_id: 'U_BOT' };
       default:
