@@ -22,11 +22,12 @@ const client = new WebClient(token, {
   ...(process.env.SLACK_API_URL ? { slackApiUrl: process.env.SLACK_API_URL } : {}),
 });
 
-const identity = new IdentityStore().get();
-const manifest = readManifestIdentity();
-
 try {
-  const result = await checkIdentity(client, identity);
+  const identity = new IdentityStore().get();
+  const manifest = process.env.SLACK_APP_MANIFEST_PATH
+    ? readManifestIdentity(process.env.SLACK_APP_MANIFEST_PATH)
+    : readManifestIdentity();
+  const result = await checkIdentity(client, identity, manifest);
 
   record(
     result.name === 'match' ? 'PASS' : 'FAIL',

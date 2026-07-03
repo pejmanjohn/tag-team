@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
@@ -20,6 +21,7 @@ const DEFAULT_APP_ICON_URL = 'https://a.slack-edge.com/80588/img/plugins/app/bot
 const DEFAULT_AVATAR_URL = 'https://a.slack-edge.com/80588/img/avatars/default_avatar.png';
 const LIVE_DEFAULT_GRAVATAR_URL =
   'https://secure.gravatar.com/avatar/1035a1e39388cffdb24d3f02e9b82f78.jpg?s=512&d=https%3A%2F%2Fa.slack-edge.com%2Fdf10d%2Fimg%2Favatars%2Fava_0005-512.png';
+const BARE_GRAVATAR_URL = 'https://secure.gravatar.com/avatar/1035a1e39388cffdb24d3f02e9b82f78.jpg?s=512&d=identicon';
 const UNKNOWN_ICON_URL = 'https://cdn.example.test/flue-assistant.png';
 
 test('IdentityStore returns the seeded install-wide avatar path', () => {
@@ -68,6 +70,7 @@ test('Slack icon URL classifier separates custom, default, and unknown URLs', ()
   assert.equal(classifySlackIconUrl(DEFAULT_APP_ICON_URL), 'default');
   assert.equal(classifySlackIconUrl(DEFAULT_AVATAR_URL), 'default');
   assert.equal(classifySlackIconUrl(LIVE_DEFAULT_GRAVATAR_URL), 'default');
+  assert.equal(classifySlackIconUrl(BARE_GRAVATAR_URL), 'default');
   assert.equal(classifySlackIconUrl(UNKNOWN_ICON_URL), 'unknown');
   assert.equal(classifySlackIconUrl('not a url'), 'unknown');
 });
@@ -105,6 +108,35 @@ test('checkIdentity compares manifest name and icon state through fake Slack', a
       backend.callsOfMethod('users.info').map((entry) => entry.body),
       [{ user: 'U_BOT' }],
     );
+  } finally {
+    await server.close();
+  }
+});
+
+test('checkIdentity reports a name mismatch from fake Slack', async () => {
+  const backend = new FakeSlackBackend({
+    slack: {
+      identity: {
+        appId: 'A_FLUE',
+        botUserId: 'U_BOT',
+        displayName: 'Drifted Bot Name',
+        image512Url: CUSTOM_ICON_URL,
+      },
+    },
+  });
+  const server = await backend.listen();
+
+  try {
+    const client = new WebClient('xoxb-test', {
+      slackApiUrl: `${server.url}/api/`,
+      retryConfig: { retries: 0 },
+    });
+
+    const result = await checkIdentity(client, defaultBotIdentity);
+
+    assert.equal(result.name, 'mismatch');
+    assert.equal(result.details.expectedName, 'Flue Assistant');
+    assert.equal(result.details.liveName, 'Drifted Bot Name');
   } finally {
     await server.close();
   }
@@ -161,7 +193,72 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
     assert.equal(unknown.code, 0);
     assert.match(unknown.output, /PASS\s+name/);
     assert.match(unknown.output, /UNKNOWN\s+icon/);
+
+    backend.configure({
+      slack: {
+        identity: {
+          appId: 'A_FLUE',
+          botUserId: 'U_BOT',
+          displayName: 'Drifted Bot Name',
+          image512Url: CUSTOM_ICON_URL,
+        },
+      },
+    });
+    let mismatch: { code: number; stdout: string; stderr: string };
+    try {
+      const success = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          SLACK_BOT_TOKEN: 'xoxb-test',
+          SLACK_API_URL: `${server.url}/api/`,
+        },
+      });
+      mismatch = { code: 0, stdout: success.stdout, stderr: success.stderr };
+    } catch (error) {
+      const failed = error as { code?: number; stdout?: string; stderr?: string };
+      mismatch = {
+        code: failed.code ?? 1,
+        stdout: failed.stdout ?? '',
+        stderr: failed.stderr ?? '',
+      };
+    }
+    assert.equal(mismatch.code, 1);
+    assert.match(`${mismatch.stdout}${mismatch.stderr}`, /FAIL\s+name/);
   } finally {
     await server.close();
   }
+});
+
+test('verify-identity-live reports malformed manifest errors without a stack trace', async () => {
+  const manifestDir = mkdtempSync(join(tmpdir(), 'flue-identity-manifest-'));
+  const manifestPath = join(manifestDir, 'slack-app-manifest.json');
+  writeFileSync(manifestPath, '{not json');
+
+  let result: { code: number; stdout: string; stderr: string };
+  try {
+    const success = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SLACK_APP_MANIFEST_PATH: manifestPath,
+        SLACK_API_URL: 'http://127.0.0.1:9/api/',
+      },
+    });
+    result = { code: 0, stdout: success.stdout, stderr: success.stderr };
+  } catch (error) {
+    const failed = error as { code?: number; stdout?: string; stderr?: string };
+    result = {
+      code: failed.code ?? 1,
+      stdout: failed.stdout ?? '',
+      stderr: failed.stderr ?? '',
+    };
+  }
+
+  const output = `${result.stdout}${result.stderr}`;
+  assert.equal(result.code, 1);
+  assert.match(output, /FAIL\s+identity-check/);
+  assert.match(output, /manifest|JSON|Unexpected|Expected property name/i);
+  assert.doesNotMatch(output, /\n\s+at\s+/);
 });

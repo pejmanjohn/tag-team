@@ -81,10 +81,7 @@ export function classifySlackIconUrl(iconUrl: string | undefined): IdentityIconS
     return 'default';
   }
   if (parsed.hostname === 'secure.gravatar.com') {
-    const fallbackUrl = parsed.searchParams.get('d');
-    if (fallbackUrl && classifySlackIconUrl(fallbackUrl) === 'default') {
-      return 'default';
-    }
+    return 'default';
   }
   return 'unknown';
 }
@@ -92,8 +89,8 @@ export function classifySlackIconUrl(iconUrl: string | undefined): IdentityIconS
 export async function checkIdentity(
   client: IdentitySlackClient,
   identity: BotIdentityConfig,
+  expected: ManifestIdentity = readManifestIdentity(),
 ): Promise<IdentityCheckResult> {
-  const expected = readManifestIdentity();
   const auth = getRecord(await client.auth.test());
   const botUserId = getString(auth.user_id);
   if (!botUserId) {
