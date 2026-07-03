@@ -13,6 +13,7 @@ Add bot scopes:
 - `assistant:write`
 - `channels:history` (new for public-channel thread continuation and explicit top-level mention context)
 - `im:history` (new for direct-message replies and DM thread context)
+- `users:read` (required by `scripts/verify-identity-live.mjs` to verify the bot name and avatar)
 
 Enable Slack's Agents & AI Apps surface for the app when the workspace allows it. This makes Slack eligible to render Assistant status, working indicators, and message streams. Slack-owned visual chrome such as the purple app-name flash is not directly configurable by this codebase; verify the actual rendering in the Slack client after the app is configured.
 
@@ -23,12 +24,44 @@ Enable App Home messages for DM playtests:
 
 In the manifest this is `features.app_home.messages_tab_enabled: true` and `features.app_home.messages_tab_read_only_enabled: false`. If the Slack DM composer says "Sending messages to this app has been turned off", this setting is missing or stale.
 
+Do not install the app yet. Set the bot identity first, then install.
+
+## 2. Set the bot identity
+
+The Slack-visible name and description live in `slack-app-manifest.json`, not in
+runtime config. Keep these fields aligned before installing:
+
+- `display_information.name` — the app display name.
+- `display_information.description` — the app description.
+- `features.bot_user.display_name` — the bot-user display name users see on messages.
+
+The avatar asset path lives in `src/config/identity.ts` and defaults to
+`assets/bot-avatar.png`. Replace that PNG if you want a custom avatar; if you move
+the file, update `avatarPath` in `src/config/identity.ts`.
+
+In the Slack app console, open **Basic Information → Display Information**:
+
+- set the app name to `display_information.name`;
+- set the app description to `display_information.description`;
+- upload `assets/bot-avatar.png` as the app icon.
+
+Then open **App Home** and set the bot-user display name to
+`features.bot_user.display_name`. This is a separate Slack field from the app name;
+keep both names identical unless you intentionally want different app and message
+labels.
+
 Install the app to the workspace, then copy:
 
 - Signing Secret
 - Bot User OAuth Token
 
-## 2. Run the local server
+Run the identity verifier before continuing:
+
+```bash
+SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
+```
+
+## 3. Run the local server
 
 ```bash
 export SLACK_SIGNING_SECRET="..."
@@ -52,7 +85,7 @@ The server exposes:
 
 After verifying the request signature, the Slack channel returns a fast HTTP acknowledgement and then runs the turn (context hydration, agent prompt, final delivery) as detached work, so Slack is acknowledged before the reply is produced.
 
-## 3. Expose it to Slack
+## 4. Expose it to Slack
 
 Use a tunnel, for example:
 
@@ -77,11 +110,11 @@ Subscribe to bot event:
 - `assistant_thread_started`
 - `assistant_thread_context_changed`
 
-The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state.
+The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state. Adding `users:read` for identity verification also requires reinstalling the app.
 
 `SLACK_BOT_USER_ID` is required before generic `message.*` events are admitted. If it is not configured, the Slack channel resolves it once on the first event via Slack `auth.test`. If that lookup fails, it falls closed: message events are still acknowledged, but runnable thread/DM turns are ignored with `missing_bot_user_id` so an app-authored Slack message cannot start a reply loop.
 
-## 4. Try it in Slack
+## 5. Try it in Slack
 
 Invite the bot to a channel, then mention it:
 
@@ -130,7 +163,7 @@ The checked-in seed data is for local demo playtesting:
 
 For a new workspace, replace the seeded assignments and channel briefs in `src/config/seed.ts` with your own demo workspace/channel values. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Replace the catch-all assignment before testing anything beyond a private demo workspace.
 
-## 5. Live verification checklist
+## 6. Live verification checklist
 
 After the operator confirms and applies the new scopes/events:
 

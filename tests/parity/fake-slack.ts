@@ -94,8 +94,18 @@ export interface FakeSlackBehaviorConfig {
    * failure + Slack-retry path. Default false.
    */
   failFinalDeliveryOnce?: boolean;
+  identity?: FakeSlackIdentityConfig;
   repliesPages?: RepliesPage[];
   historyMessages?: unknown[];
+}
+
+export interface FakeSlackIdentityConfig {
+  appId?: string;
+  botUserId?: string;
+  displayName?: string;
+  realName?: string;
+  image512Url?: string;
+  image72Url?: string;
 }
 
 export interface FakeProviderConfig {
@@ -151,6 +161,7 @@ export class FakeSlackBackend {
   private failStopStreamOnce: boolean;
   private failConversationReads: boolean;
   private failFinalDeliveryOnce: boolean;
+  private identity: Required<FakeSlackIdentityConfig>;
   private providerMode: 'ok' | 'http_500';
   private replyText: string;
   private toolChannelId: string;
@@ -173,6 +184,14 @@ export class FakeSlackBackend {
     this.failStopStreamOnce = slack.failStopStreamOnce ?? false;
     this.failConversationReads = slack.failConversationReads ?? false;
     this.failFinalDeliveryOnce = slack.failFinalDeliveryOnce ?? false;
+    this.identity = {
+      appId: slack.identity?.appId ?? 'A_FAKE',
+      botUserId: slack.identity?.botUserId ?? 'U_BOT',
+      displayName: slack.identity?.displayName ?? 'Flue Assistant',
+      realName: slack.identity?.realName ?? 'Flue Assistant',
+      image512Url: slack.identity?.image512Url ?? 'https://avatars.slack-edge.com/fake/flue_512.png',
+      image72Url: slack.identity?.image72Url ?? 'https://avatars.slack-edge.com/fake/flue_72.png',
+    };
     this.repliesPages = slack.repliesPages ?? DEFAULT_REPLIES_PAGES;
     this.historyMessages = slack.historyMessages ?? DEFAULT_HISTORY_MESSAGES;
     this.providerMode = config.provider?.mode ?? 'ok';
@@ -357,6 +376,9 @@ export class FakeSlackBackend {
       if (config.slack.failFinalDeliveryOnce !== undefined) {
         this.failFinalDeliveryOnce = config.slack.failFinalDeliveryOnce;
       }
+      if (config.slack.identity !== undefined) {
+        this.identity = { ...this.identity, ...config.slack.identity };
+      }
     }
     if (config.provider) {
       if (config.provider.mode !== undefined) {
@@ -468,7 +490,21 @@ export class FakeSlackBackend {
           ? { ok: false, error: 'internal_error' }
           : { ok: true, messages: this.historyMessages };
       case 'auth.test':
-        return { ok: true, user_id: 'U_BOT' };
+        return { ok: true, user_id: this.identity.botUserId, app_id: this.identity.appId };
+      case 'users.info':
+        return {
+          ok: true,
+          user: {
+            id: body.user,
+            name: this.identity.displayName,
+            profile: {
+              display_name: this.identity.displayName,
+              real_name: this.identity.realName,
+              image_512: this.identity.image512Url,
+              image_72: this.identity.image72Url,
+            },
+          },
+        };
       default:
         return { ok: true };
     }

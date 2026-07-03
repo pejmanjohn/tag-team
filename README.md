@@ -39,6 +39,13 @@ Expose the port with a tunnel and point Slack's Events Request URL at
 `https://<tunnel-host>/channels/slack/events`. See `docs/play-slack.md` for the full
 real-Slack setup (scopes, event subscriptions, App Home, and the live checklist).
 
+Bot identity is configured before install: `slack-app-manifest.json` owns the
+Slack-visible app name, bot-user display name, and description, while
+`src/config/identity.ts` points at the local avatar asset
+(`assets/bot-avatar.png` by default). After setting those Slack console fields and
+uploading the avatar, run `node scripts/verify-identity-live.mjs` with
+`SLACK_BOT_TOKEN` set to verify the live name and icon state.
+
 Build the deployable Node artifact:
 
 ```bash
@@ -75,9 +82,9 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test
 ```
 
-The suite is 34 tests: the 23 parity scenarios on the Flue lane (Lane B), the
-fake-Slack smoke tests, Slack formatting, the agent model resolver, and the
-turn-normalization/history-window unit tests.
+The suite is 40 tests: the 23 parity scenarios on the Flue lane (Lane B), the
+identity checks, fake-Slack smoke tests, Slack formatting, the agent model
+resolver, and the turn-normalization/history-window unit tests.
 
 Offline, net-guarded evidence scripts (run with a Node >= 22.19 on `PATH`):
 
@@ -91,7 +98,21 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-providers.mjs
 Each spawns the real app against a fake Slack/provider backend and asserts zero
 external network traffic (`scripts/net-guard.mjs`).
 
+Live Slack app identity check:
+
+```bash
+SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
+```
+
+The identity verifier is the live Slack-app check: it calls Slack Web API
+`auth.test` and `users.info`, compares the bot-user display name to
+`slack-app-manifest.json`, and reports whether the avatar looks custom, default,
+or unknown. The Slack app must include the `users:read` bot scope for that profile
+read.
+
 ## More
 
 - `docs/play-slack.md` — end-to-end real-Slack setup and the live verification checklist.
+- `slack-app-manifest.json` + `assets/bot-avatar.png` — default Slack app identity
+  values and avatar asset for fresh installs.
 - `docs/decisions/` — decision records and the Stage 4 evidence artifacts.
