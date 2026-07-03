@@ -7,21 +7,18 @@
  * via `cloudflare-workers-ai` (openai-completions wire protocol) — proving one
  * agent reaches two providers by only swapping SLACK_FLUE_MODEL.
  *
- * PROVENANCE (honest live-vs-stub): both runs are STUBS.
- *   - ANTHROPIC_API_KEY is absent in this environment → protocol-faithful
- *     anthropic-messages SSE stub.
- *   - CLOUDFLARE_API_TOKEN is present but was verified INVALID (401) → openai-
- *     completions stub. The 401 evidence is captured separately.
- * A clearly-labeled stub is acceptable here; a mislabeled one is not.
+ * PROVENANCE (honest live-vs-stub): this offline harness intentionally runs
+ * against local fake provider endpoints. Replies must stay labeled STUB unless
+ * a future operator wires live credentials and records fresh live evidence.
+ * A clearly labeled stub is acceptable here; a mislabeled one is not.
  *
  * Offline, net-guarded. Saves labeled replies to
  * docs/decisions/artifacts/g-port-stage4/provider-{anthropic,workers-ai}-reply.md
  *
  * Run with Node >= 22.19:
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-providers.mjs
+ *   node scripts/verify-providers.mjs
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,12 +30,12 @@ import {
   loadFake,
   postSignedEvent,
   spawnServer,
+  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
 } from './lib/offline-harness.mjs';
 
-const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
 const APP_MENTION = JSON.parse(readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'));
 
 const ANTHROPIC_MARKER = 'ANTHROPIC_STUB_REPLY::haiku-4-5::exec-priorities-ack';
@@ -92,7 +89,7 @@ try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
 
-  // --- anthropic (STUB: key absent) — anthropic-messages wire protocol. ---
+  // --- anthropic (STUB: local fake endpoint) — anthropic-messages wire protocol. ---
   const anthropic = await runProvider({
     serverEntry,
     fake,
@@ -101,7 +98,7 @@ try {
     model: 'anthropic/claude-haiku-4-5',
     replyText: ANTHROPIC_MARKER,
     // Point the anthropic provider at the fake; a dummy key satisfies the SDK
-    // (the fake ignores it). No real ANTHROPIC_API_KEY is present.
+    // and the fake ignores it.
     env: { ANTHROPIC_BASE_URL: fake.url, ANTHROPIC_API_KEY: 'offline-stub-key' },
   });
   record(
@@ -115,7 +112,7 @@ try {
     `wireMethods=${anthropic.wireMethods.join(',')}`,
   );
 
-  // --- cloudflare-workers-ai (STUB: token invalid) — openai-completions. ---
+  // --- cloudflare-workers-ai (STUB: local fake endpoint) — openai-completions. ---
   const workersAi = await runProvider({
     serverEntry,
     fake,
@@ -146,13 +143,13 @@ try {
 
   // --- Artifacts. ---
   writeFileSync(
-    join(ARTIFACT_DIR, 'provider-anthropic-reply.md'),
+    stage4ArtifactPath('provider-anthropic-reply.md'),
     [
       '# Provider reply — anthropic (STUB)',
       '',
-      '- **Provenance:** STUB. `ANTHROPIC_API_KEY` is ABSENT in this environment',
-      '  (not in the shell env, not in `.env.slack.local`). Per the brief, an absent',
-      '  cred runs against a protocol-faithful `anthropic-messages` SSE stub.',
+      '- **Provenance:** STUB. The harness points `ANTHROPIC_BASE_URL` at a',
+      '  local fake provider endpoint and uses a dummy SDK key that the fake ignores.',
+      '  No external Anthropic call is expected during this offline check.',
       '- **Model:** `anthropic/claude-haiku-4-5` (via `SLACK_FLUE_MODEL`).',
       '- **Provider wire protocol:** `POST <base>/v1/messages` streaming SSE',
       `  (\`message_start\` → \`content_block_delta\` → \`message_stop\`). Wire methods observed: \`${anthropic.wireMethods.join(', ')}\`.`,
@@ -167,15 +164,14 @@ try {
     ].join('\n') + '\n',
   );
   writeFileSync(
-    join(ARTIFACT_DIR, 'provider-workers-ai-reply.md'),
+    stage4ArtifactPath('provider-workers-ai-reply.md'),
     [
       '# Provider reply — cloudflare-workers-ai (STUB)',
       '',
-      '- **Provenance:** STUB. `CLOUDFLARE_API_TOKEN` is PRESENT but was verified',
-      '  INVALID (HTTP 401, error code 1000 "Invalid API Token") against',
-      '  `GET https://api.cloudflare.com/client/v4/user/tokens/verify` on 2026-07-01.',
-      '  See `workers-ai-cred-check.md`. An invalid cred runs against the existing',
-      '  `openai-completions` stub (cloudflare-workers-ai speaks that protocol).',
+      '- **Provenance:** STUB. The harness points `CLOUDFLARE_WORKERS_AI_BASE_URL`',
+      '  at a local fake OpenAI-compatible endpoint and uses a dummy token that',
+      '  the fake ignores. No external Cloudflare call is expected during this',
+      '  offline check.',
       '- **Model:** `cloudflare-workers-ai/@cf/zai-org/glm-5.2` (via `SLACK_FLUE_MODEL`).',
       '- **Provider wire protocol:** `POST <base>/v1/chat/completions` streaming SSE',
       `  (OpenAI chat.completion.chunk deltas). Wire methods observed: \`${workersAi.wireMethods.join(', ')}\`.`,

@@ -29,8 +29,8 @@
  * the shared harness pins fake tokens and points SLACK_API_URL/LOCAL_STUB_URL
  * at loopback stubs.
  *
- * Run (local default node is 22.14; Flue needs >= 22.19):
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/probe-dm-transcript.mjs
+ * Run with Node >= 22.19:
+ *   node scripts/probe-dm-transcript.mjs
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';

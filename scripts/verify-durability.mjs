@@ -28,9 +28,9 @@
  *      same implicit reply produces nothing (thread never started there).
  *
  * Run with Node >= 22.19:
- *   PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/verify-durability.mjs
+ *   node scripts/verify-durability.mjs
  */
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +43,7 @@ import {
   loadFake,
   postSignedEvent,
   spawnServer,
+  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
@@ -53,7 +54,6 @@ const INTERNAL_TOKEN = 'durability-internal-token';
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
 const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}`;
-const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
 
 const logLines = [];
 function log(line) {
@@ -317,14 +317,14 @@ try {
 if (historyTranscript !== undefined) {
   try {
     writeFileSync(
-      join(ARTIFACT_DIR, 'durability-transcript.json'),
+      stage4ArtifactPath('durability-transcript.json'),
       `${JSON.stringify(JSON.parse(historyTranscript), null, 2)}\n`,
     );
   } catch {
-    writeFileSync(join(ARTIFACT_DIR, 'durability-transcript.json'), historyTranscript);
+    writeFileSync(stage4ArtifactPath('durability-transcript.json'), historyTranscript);
   }
 }
 const failed = results.filter((result) => !result.passed);
 log(`\n${results.length - failed.length}/${results.length} checks passed`);
-writeFileSync(join(ARTIFACT_DIR, 'durability-run.log'), `${logLines.join('\n')}\n`);
+writeFileSync(stage4ArtifactPath('durability-run.log'), `${logLines.join('\n')}\n`);
 process.exit(failed.length === 0 ? 0 : 1);

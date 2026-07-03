@@ -24,8 +24,7 @@ import {
  *
  * Node for build + spawn is `FLUE_NODE_BIN ?? process.execPath`; Flue needs
  * Node >= 22.19, so the adapter validates the version and fails with a message
- * naming `FLUE_NODE_BIN` when it is too old (the default local Node is 22.14 —
- * run with `FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node`).
+ * naming `FLUE_NODE_BIN` when it is too old.
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -201,7 +200,7 @@ function assertNodeVersion(nodeBin: string): void {
   } catch (error) {
     throw new Error(
       `Lane B could not run \`${nodeBin} --version\`. Set FLUE_NODE_BIN to a Node ` +
-        `>= 22.19 binary (e.g. /opt/homebrew/opt/node@24/bin/node). Cause: ` +
+        `>= 22.19 binary. Cause: ` +
         `${error instanceof Error ? error.message : String(error)}`,
     );
   }
@@ -209,8 +208,7 @@ function assertNodeVersion(nodeBin: string): void {
   if (compareVersion(parts, MIN_NODE) < 0) {
     throw new Error(
       `Lane B needs Node >= 22.19 to build and run the Flue app, but ${nodeBin} is ` +
-        `${raw}. Set FLUE_NODE_BIN to a newer Node (e.g. ` +
-        `FLUE_NODE_BIN=/opt/homebrew/opt/node@24/bin/node npm test).`,
+        `${raw}. Set FLUE_NODE_BIN to a newer Node (e.g. FLUE_NODE_BIN=/path/to/node npm test).`,
     );
   }
 }

@@ -1,10 +1,9 @@
 # Provider reply — cloudflare-workers-ai (STUB)
 
-- **Provenance:** STUB. `CLOUDFLARE_API_TOKEN` is PRESENT but was verified
-  INVALID (HTTP 401, error code 1000 "Invalid API Token") against
-  `GET https://api.cloudflare.com/client/v4/user/tokens/verify` on 2026-07-01.
-  See `workers-ai-cred-check.md`. An invalid cred runs against the existing
-  `openai-completions` stub (cloudflare-workers-ai speaks that protocol).
+- **Provenance:** STUB. The harness points `CLOUDFLARE_WORKERS_AI_BASE_URL`
+  at a local fake OpenAI-compatible endpoint and uses a dummy token that
+  the fake ignores. No external Cloudflare call is expected during this
+  offline check.
 - **Model:** `cloudflare-workers-ai/@cf/zai-org/glm-5.2` (via `SLACK_FLUE_MODEL`).
 - **Provider wire protocol:** `POST <base>/v1/chat/completions` streaming SSE
   (OpenAI chat.completion.chunk deltas). Wire methods observed: `chat/completions`.
