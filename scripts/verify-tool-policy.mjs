@@ -21,7 +21,7 @@
  * Run with Node >= 22.19:
  *   node scripts/verify-tool-policy.mjs
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,6 +46,7 @@ const INTERNAL_TOKEN = 'tool-policy-internal-token';
 // re-typed) so this gate can't silently drift from the real seed + stub.
 const DENIAL_TEXT = 'Denied: lookup_channel_brief is restricted to the assigned channel.';
 const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
+mkdirSync(ARTIFACT_DIR, { recursive: true });
 
 const results = [];
 function record(name, passed, detail) {

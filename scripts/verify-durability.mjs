@@ -30,7 +30,7 @@
  * Run with Node >= 22.19:
  *   node scripts/verify-durability.mjs
  */
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,6 +54,7 @@ const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
 const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}`;
 const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
+mkdirSync(ARTIFACT_DIR, { recursive: true });
 
 const logLines = [];
 function log(line) {

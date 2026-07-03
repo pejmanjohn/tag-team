@@ -14,7 +14,9 @@ Mechanism:
 1. Start from a clean committed private-repo `HEAD`.
 2. Create a scratch tree with `git archive HEAD`.
 3. Delete every path marked `exclude` in the export manifest below.
-4. Run the public-tree checks in the scratch tree.
+4. Run `npm run verify:oss-export`, which recreates the scratch tree, applies
+   the manifest exclusions, runs the leak and binary checks, installs
+   dependencies, runs the test suite, and runs the offline verification scripts.
 5. Initialize a new public repository from that cleaned tree and create one
    initial commit.
 
@@ -25,6 +27,13 @@ file deletion in this repository is necessary but not sufficient for publishing.
 `package.json` currently uses `git+https://github.com/slack-flue/slack-flue.git`
 as the intended public repository URL. Treat that owner/name as a placeholder
 until the launch task creates or confirms the real public repository.
+
+`package.json` intentionally contains publish metadata and does not carry
+`private:true` so the exported package metadata is correct. To protect the
+private development repository, `prepublishOnly` runs
+`scripts/guard-fresh-export-publish.mjs`, which refuses npm publish attempts
+from any git checkout with more than one commit. A fresh squashed export with a
+single initial commit passes that guard.
 
 ## Export Manifest
 
@@ -84,19 +93,32 @@ workspace/member/channel identity was enough to remove them.
 
 ## Dry-Run Gate
 
-The dry run must operate on committed `HEAD`, then delete the manifest-excluded
-paths before public-tree validation:
+The dry run is executable and fail-closed. It operates on committed `HEAD`,
+deletes the manifest-excluded paths, verifies post-conditions, scans for denied
+terms and unexpected binary/image files, then runs the install/test/offline
+verification suite:
 
 ```bash
-scratch=$(mktemp -d)
-git archive HEAD | tar -x -C "$scratch"
-cd "$scratch"
-rm -rf docs/plans docs/decisions
-test -f LICENSE
-! grep -rilE 'skillet|docs/source|/opt/homebrew' .
-npm ci
-npm test
+npm run verify:oss-export
 ```
 
-Only after those checks pass may the cleaned scratch tree be committed as the
-single initial commit in the new public repository.
+The executable gate denies these text markers anywhere in the export before
+dependencies are installed:
+
+- `skillet`
+- `docs/source`
+- `/opt/homebrew`
+- `claude[- ]?tag`
+- `paperplane`
+- `magoosh`
+- `all-paperplane-labs`
+- `/Users/`
+- `canary`
+
+It also fails on unexpected binary/image file extensions such as `png`, `jpg`,
+`webp`, `gif`, `pdf`, and `mp4`. This is required because the removed Slack
+screenshots were the highest-risk leak class and cannot be reviewed by text
+grep.
+
+Only after `npm run verify:oss-export` exits 0 may the cleaned export content be
+used for the single initial commit in the new public repository.

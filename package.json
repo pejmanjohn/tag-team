@@ -14,7 +14,9 @@
   "scripts": {
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "flue:build": "flue build --target node"
+    "flue:build": "flue build --target node",
+    "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
+    "verify:oss-export": "node scripts/verify-oss-export.mjs"
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.8",

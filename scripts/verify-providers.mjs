@@ -18,7 +18,7 @@
  * Run with Node >= 22.19:
  *   node scripts/verify-providers.mjs
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +37,7 @@ import {
 } from './lib/offline-harness.mjs';
 
 const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'g-port-stage4');
+mkdirSync(ARTIFACT_DIR, { recursive: true });
 const APP_MENTION = JSON.parse(readFileSync(join(REPO_ROOT, 'fixtures', 'slack', 'app-mention.json'), 'utf8'));
 
 const ANTHROPIC_MARKER = 'ANTHROPIC_STUB_REPLY::haiku-4-5::exec-priorities-ack';
