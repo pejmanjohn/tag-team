@@ -13,6 +13,7 @@ Add bot scopes:
 - `assistant:write`
 - `channels:history` (new for public-channel thread continuation and explicit top-level mention context)
 - `im:history` (new for direct-message replies and DM thread context)
+- `users:read` (required by `scripts/verify-identity-live.mjs` to verify the bot name and avatar)
 
 Enable Slack's Agents & AI Apps surface for the app when the workspace allows it. This makes Slack eligible to render Assistant status, working indicators, and message streams. Slack-owned visual chrome such as the purple app-name flash is not directly configurable by this codebase; verify the actual rendering in the Slack client after the app is configured.
 
@@ -109,7 +110,7 @@ Subscribe to bot event:
 - `assistant_thread_started`
 - `assistant_thread_context_changed`
 
-The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state.
+The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state. Adding `users:read` for identity verification also requires reinstalling the app.
 
 `SLACK_BOT_USER_ID` is required before generic `message.*` events are admitted. If it is not configured, the Slack channel resolves it once on the first event via Slack `auth.test`. If that lookup fails, it falls closed: message events are still acknowledged, but runnable thread/DM turns are ignored with `missing_bot_user_id` so an app-authored Slack message cannot start a reply loop.
 

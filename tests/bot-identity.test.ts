@@ -18,6 +18,8 @@ const execFileAsync = promisify(execFile);
 const CUSTOM_ICON_URL = 'https://avatars.slack-edge.com/2026-07-02/T123_512.png';
 const DEFAULT_APP_ICON_URL = 'https://a.slack-edge.com/80588/img/plugins/app/bot_512.png';
 const DEFAULT_AVATAR_URL = 'https://a.slack-edge.com/80588/img/avatars/default_avatar.png';
+const LIVE_DEFAULT_GRAVATAR_URL =
+  'https://secure.gravatar.com/avatar/1035a1e39388cffdb24d3f02e9b82f78.jpg?s=512&d=https%3A%2F%2Fa.slack-edge.com%2Fdf10d%2Fimg%2Favatars%2Fava_0005-512.png';
 const UNKNOWN_ICON_URL = 'https://cdn.example.test/flue-assistant.png';
 
 test('IdentityStore returns the seeded install-wide avatar path', () => {
@@ -65,6 +67,7 @@ test('Slack icon URL classifier separates custom, default, and unknown URLs', ()
   assert.equal(classifySlackIconUrl(CUSTOM_ICON_URL), 'custom');
   assert.equal(classifySlackIconUrl(DEFAULT_APP_ICON_URL), 'default');
   assert.equal(classifySlackIconUrl(DEFAULT_AVATAR_URL), 'default');
+  assert.equal(classifySlackIconUrl(LIVE_DEFAULT_GRAVATAR_URL), 'default');
   assert.equal(classifySlackIconUrl(UNKNOWN_ICON_URL), 'unknown');
   assert.equal(classifySlackIconUrl('not a url'), 'unknown');
 });

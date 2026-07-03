@@ -27,7 +27,8 @@
         "assistant:write",
         "channels:history",
         "chat:write",
-        "im:history"
+        "im:history",
+        "users:read"
       ]
     }
   },

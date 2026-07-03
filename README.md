@@ -107,7 +107,8 @@ SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
 The identity verifier is the live Slack-app check: it calls Slack Web API
 `auth.test` and `users.info`, compares the bot-user display name to
 `slack-app-manifest.json`, and reports whether the avatar looks custom, default,
-or unknown.
+or unknown. The Slack app must include the `users:read` bot scope for that profile
+read.
 
 ## More
 

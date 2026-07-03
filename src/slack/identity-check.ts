@@ -80,6 +80,12 @@ export function classifySlackIconUrl(iconUrl: string | undefined): IdentityIconS
   ) {
     return 'default';
   }
+  if (parsed.hostname === 'secure.gravatar.com') {
+    const fallbackUrl = parsed.searchParams.get('d');
+    if (fallbackUrl && classifySlackIconUrl(fallbackUrl) === 'default') {
+      return 'default';
+    }
+  }
   return 'unknown';
 }
 
@@ -103,7 +109,7 @@ export async function checkIdentity(
     getString(profile.image_192) ||
     getString(profile.image_72) ||
     undefined;
-  const appId = getString(auth.app_id) || undefined;
+  const appId = getString(auth.app_id) || getString(profile.api_app_id) || undefined;
 
   return {
     name: liveName === expected.name ? 'match' : 'mismatch',
