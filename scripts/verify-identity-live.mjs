@@ -1,8 +1,30 @@
 #!/usr/bin/env node
-import { WebClient } from '@slack/web-api';
+// Version guard must run before the TypeScript imports below: Node's native
+// type stripping only exists in >= 22.18, and the raw ERR_UNKNOWN_FILE_EXTENSION
+// crash it produces on older Nodes gives the operator no remediation.
+const MIN_NODE = [22, 19, 0];
+const nodeParts = process.versions.node.split('.').map(Number);
+let nodeSupported = true;
+for (let i = 0; i < MIN_NODE.length; i += 1) {
+  const piece = nodeParts[i] ?? 0;
+  if (piece > MIN_NODE[i]) break;
+  if (piece < MIN_NODE[i]) {
+    nodeSupported = false;
+    break;
+  }
+}
+if (!nodeSupported) {
+  console.error(
+    `FAIL    env - this script needs Node >= 22.19 to load the repo's TypeScript modules, ` +
+      `but ${process.execPath} is v${process.versions.node}. ` +
+      'Re-run with a newer Node first on PATH (e.g. PATH=/path/to/node-22.19+/bin:$PATH).',
+  );
+  process.exit(1);
+}
 
-import { defaultBotIdentity, IdentityStore } from '../src/config/identity.ts';
-import { checkIdentity, readManifestIdentity } from '../src/slack/identity-check.ts';
+const { WebClient } = await import('@slack/web-api');
+const { defaultBotIdentity, IdentityStore } = await import('../src/config/identity.ts');
+const { checkIdentity, readManifestIdentity } = await import('../src/slack/identity-check.ts');
 
 const results = [];
 
@@ -41,8 +63,20 @@ try {
     record('PASS', 'icon', `custom Slack-hosted avatar detected at ${result.details.iconUrl}`);
   } else if (result.icon === 'default') {
     record('FAIL', 'icon', `Slack stock avatar detected at ${result.details.iconUrl}`);
+  } else if (process.env.SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON === '1') {
+    record(
+      'UNKNOWN',
+      'icon',
+      `could not classify avatar URL ${result.details.iconUrl ?? '(empty)'} ` +
+        '(accepted via SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON=1)',
+    );
   } else {
-    record('UNKNOWN', 'icon', `could not classify avatar URL ${result.details.iconUrl ?? '(empty)'}`);
+    record(
+      'FAIL',
+      'icon',
+      `could not classify avatar URL ${result.details.iconUrl ?? '(empty)'} - verify the avatar ` +
+        'visually in the app console below, then re-run with SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON=1 to accept',
+    );
   }
 
   console.log('');

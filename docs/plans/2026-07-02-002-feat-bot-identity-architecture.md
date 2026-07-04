@@ -80,6 +80,8 @@ New script `scripts/verify-identity-live.mjs` (live, needs `SLACK_BOT_TOKEN`; ho
 
 Honest framing: Slack exposes **no official API field** meaning "icon is default". The URL-host split (uploaded assets live on `avatars.slack-edge.com`; stock defaults are served from `a.slack-edge.com` static paths) is a real, observable signal but an undocumented one, so the script treats it as a classifier with an explicit unknown state, never a hard failure. AE3 is met either way: an ❌ or ❓ makes the gap visible rather than silent. This must be confirmed against a live workspace during U3 (see Risks V1).
 
+> **Revision 2026-07-03 (post-review):** ❓ now blocks by default. Review found that a pass-through unknown state lets a stock avatar served from an unrecognized CDN path silently satisfy the identity gate. As shipped, an unclassifiable icon URL exits non-zero with instructions to verify visually in the app console and re-run with `SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON=1` — the operator acknowledgment preserves the original intent (heuristic drift must not permanently block a correctly configured install) without letting it pass silently. The live check also compares against `features.bot_user.display_name` (the name users see on messages), not `display_information.name`, since the two may intentionally differ.
+
 Output shape follows the existing verify-script convention (`PASS/FAIL` lines + a summary), e.g.:
 
 ```

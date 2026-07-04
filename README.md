@@ -10,7 +10,7 @@ tool is exposed to agents that opt in.
 
 The product runs entirely on the **Flue lane**. The earlier hand-rolled harness has
 been deleted; the behavior it encoded is preserved by a lane-agnostic parity suite
-(`tests/parity/`) that now runs against the real Flue app (Lane B, 21 scenarios).
+(`tests/parity/`) that now runs against the real Flue app (Lane B, 23 scenarios).
 
 ## Architecture
 
@@ -82,7 +82,7 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The suite is 40 tests: the 23 parity scenarios on the Flue lane (Lane B), the
+The suite is 42 tests: the 23 parity scenarios on the Flue lane (Lane B), the
 identity checks, fake-Slack smoke tests, Slack formatting, the agent model
 resolver, and the turn-normalization/history-window unit tests.
 
@@ -115,4 +115,3 @@ read.
 - `docs/play-slack.md` — end-to-end real-Slack setup and the live verification checklist.
 - `slack-app-manifest.json` + `assets/bot-avatar.png` — default Slack app identity
   values and avatar asset for fresh installs.
-- `docs/decisions/` — decision records and the Stage 4 evidence artifacts.

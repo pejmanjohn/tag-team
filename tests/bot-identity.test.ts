@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { WebClient } from '@slack/web-api';
@@ -12,8 +13,11 @@ import { defaultBotIdentity, IdentityStore } from '../src/config/identity.ts';
 import { checkIdentity, classifySlackIconUrl } from '../src/slack/identity-check.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 
-const REPO_ROOT = new URL('..', import.meta.url).pathname;
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MANIFEST_PATH = join(REPO_ROOT, 'slack-app-manifest.json');
+// The verify script loads TypeScript modules, which needs Node >= 22.19; honor
+// the same escape hatch the parity suite (tests/parity/lane-b.ts) documents.
+const NODE_BIN = process.env.FLUE_NODE_BIN ?? process.execPath;
 const execFileAsync = promisify(execFile);
 
 const CUSTOM_ICON_URL = 'https://avatars.slack-edge.com/2026-07-02/T123_512.png';
@@ -146,7 +150,10 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
   const backend = new FakeSlackBackend();
   const server = await backend.listen();
 
-  async function run(iconUrl: string): Promise<{ code: number; output: string }> {
+  async function run(
+    iconUrl: string,
+    extraEnv: Record<string, string> = {},
+  ): Promise<{ code: number; output: string }> {
     backend.configure({
       slack: {
         identity: {
@@ -159,12 +166,13 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
     });
 
     try {
-      const result = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+      const result = await execFileAsync(NODE_BIN, ['scripts/verify-identity-live.mjs'], {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
           SLACK_BOT_TOKEN: 'xoxb-test',
           SLACK_API_URL: `${server.url}/api/`,
+          ...extraEnv,
         },
       });
       return { code: 0, output: result.stdout + result.stderr };
@@ -190,9 +198,14 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
     assert.match(defaultIcon.output, /FAIL\s+icon/);
 
     const unknown = await run(UNKNOWN_ICON_URL);
-    assert.equal(unknown.code, 0);
+    assert.equal(unknown.code, 1);
     assert.match(unknown.output, /PASS\s+name/);
-    assert.match(unknown.output, /UNKNOWN\s+icon/);
+    assert.match(unknown.output, /FAIL\s+icon/);
+    assert.match(unknown.output, /SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON=1/);
+
+    const acceptedUnknown = await run(UNKNOWN_ICON_URL, { SLACK_IDENTITY_ACCEPT_UNKNOWN_ICON: '1' });
+    assert.equal(acceptedUnknown.code, 0);
+    assert.match(acceptedUnknown.output, /UNKNOWN\s+icon/);
 
     backend.configure({
       slack: {
@@ -206,7 +219,7 @@ test('verify-identity-live reports custom, default, and unknown icon states agai
     });
     let mismatch: { code: number; stdout: string; stderr: string };
     try {
-      const success = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+      const success = await execFileAsync(NODE_BIN, ['scripts/verify-identity-live.mjs'], {
         cwd: REPO_ROOT,
         env: {
           ...process.env,
@@ -237,7 +250,7 @@ test('verify-identity-live reports malformed manifest errors without a stack tra
 
   let result: { code: number; stdout: string; stderr: string };
   try {
-    const success = await execFileAsync(process.execPath, ['scripts/verify-identity-live.mjs'], {
+    const success = await execFileAsync(NODE_BIN, ['scripts/verify-identity-live.mjs'], {
       cwd: REPO_ROOT,
       env: {
         ...process.env,

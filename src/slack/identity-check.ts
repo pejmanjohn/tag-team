@@ -109,12 +109,14 @@ export async function checkIdentity(
   const appId = getString(auth.app_id) || getString(profile.api_app_id) || undefined;
 
   return {
-    name: liveName === expected.name ? 'match' : 'mismatch',
+    // Users see the bot-user display name on messages; the app name
+    // (display_information.name) may intentionally differ per docs/play-slack.md.
+    name: liveName === expected.botDisplayName ? 'match' : 'mismatch',
     icon: classifySlackIconUrl(iconUrl),
     details: {
       ...(appId ? { appId } : {}),
       botUserId,
-      expectedName: expected.name,
+      expectedName: expected.botDisplayName,
       liveName,
       ...(iconUrl ? { iconUrl } : {}),
       avatarPath: identity.avatarPath,

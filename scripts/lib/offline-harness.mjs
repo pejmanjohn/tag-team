@@ -48,7 +48,8 @@ export function assertNodeVersion() {
       if ((parts[i] ?? 0) < MIN_NODE[i]) {
         throw new Error(
           `This script needs Node >= 22.19 to build/run Flue, but ${process.execPath} is ${raw}. ` +
-            'Run it with Node >= 22.19 on PATH, or set FLUE_NODE_BIN to a Node >= 22.19 binary.',
+            'Re-run it with a newer Node first on PATH (e.g. PATH=/path/to/node-22.19+/bin:$PATH); ' +
+            'FLUE_NODE_BIN only affects the parity test suite, not these scripts.',
         );
       }
       break;

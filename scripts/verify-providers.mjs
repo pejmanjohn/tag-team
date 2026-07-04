@@ -142,8 +142,19 @@ try {
   record('NET_GUARD_LOG empty -> zero external traffic', attempted === '', attempted || 'none');
 
   // --- Artifacts. ---
-  writeFileSync(
-    stage4ArtifactPath('provider-anthropic-reply.md'),
+  // A LIVE-provenance artifact is stronger evidence than this offline stub run;
+  // only scripts/verify-providers-live.mjs may replace it (or delete the file
+  // first to force a stub rewrite).
+  const writeStubArtifact = (fileName, content) => {
+    const artifactPath = stage4ArtifactPath(fileName);
+    if (existsSync(artifactPath) && readFileSync(artifactPath, 'utf8').includes('**Provenance:** LIVE')) {
+      console.log(`kept LIVE artifact ${fileName} (offline stub run does not downgrade live evidence)`);
+      return;
+    }
+    writeFileSync(artifactPath, content);
+  };
+  writeStubArtifact(
+    'provider-anthropic-reply.md',
     [
       '# Provider reply — anthropic (STUB)',
       '',
@@ -163,8 +174,8 @@ try {
       '```',
     ].join('\n') + '\n',
   );
-  writeFileSync(
-    stage4ArtifactPath('provider-workers-ai-reply.md'),
+  writeStubArtifact(
+    'provider-workers-ai-reply.md',
     [
       '# Provider reply — cloudflare-workers-ai (STUB)',
       '',
