@@ -1,8 +1,10 @@
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import * as v from 'valibot';
 
+import { renderAdminPage } from './page.ts';
+import { resolveEffectiveSlackConfig, type EffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
-import { knownProviderIds } from '../config/providers.ts';
+import { listRuntimeModelProviders } from '../config/providers.ts';
 import { getConfigStore, type SqliteConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
@@ -12,6 +14,8 @@ interface AdminRoutesOptions {
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
 }
+
+const ADMIN_COOKIE = 'flue_admin';
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
@@ -58,21 +62,43 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const store = () => options.store ?? getConfigStore();
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.FLUE_ADMIN_TOKEN;
-  const providers = () => options.knownProviders ?? knownProviderIds();
+  const modelProviders = () =>
+    options.knownProviders
+      ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
+      : listRuntimeModelProviders();
 
-  app.use('/admin/*', async (c, next) => {
+  const adminGate = async (c: Context, next: Next) => {
     const expected = adminToken();
     if (!expected) {
       return c.notFound();
     }
-    const candidate = bearerToken(c.req.header('authorization'));
+
+    const queryToken = c.req.query('token');
+    if (constantTimeEquals(queryToken, expected)) {
+      setAdminCookie(c, expected);
+      return next();
+    }
+
+    const candidate = bearerToken(c.req.header('authorization')) ?? cookieToken(c.req.header('cookie'));
     if (!constantTimeEquals(candidate, expected)) {
       return c.json({ error: 'unauthorized' }, 401);
     }
     return next();
-  });
+  };
+
+  app.use('/admin', adminGate);
+  app.use('/admin/*', adminGate);
+
+  app.get('/admin', (c) => c.html(renderAdminPage()));
 
   app.get('/admin/api/agents', (c) => c.json({ agents: store().listAgents() }));
+
+  app.get('/admin/api/models', (c) =>
+    c.json({
+      automatic: { label: 'Automatic (provider default)', value: null },
+      providers: modelProviders(),
+    }),
+  );
 
   app.post('/admin/api/agents', async (c) => {
     const body = await readJson(c.req);
@@ -81,10 +107,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const agent = toAgentConfig(parsed.output);
-    const badProvider = unknownProvider(agent.model, providers());
-    if (badProvider) {
-      return unknownProviderResponse(c, badProvider, providers());
-    }
     if (!isModelResolvable(agent)) {
       return c.json({ error: 'model_not_resolvable' }, 422);
     }
@@ -127,10 +149,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         id: agentId,
         defaultModels: patch.defaultModels ?? current.defaultModels,
       };
-      const badProvider = unknownProvider(next.model, providers());
-      if (badProvider) {
-        return unknownProviderResponse(c, badProvider, providers());
-      }
       if (!isModelResolvable(next)) {
         return c.json({ error: 'model_not_resolvable' }, 422);
       }
@@ -168,6 +186,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin/api/assignments', (c) => {
+    if (!c.req.query('workspaceId') && !c.req.query('channelId')) {
+      return c.json({ assignments: store().listAssignments() });
+    }
     const key = assignmentKey(c);
     if (!key) {
       return invalidRequest(c);
@@ -201,12 +222,56 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
   });
 
+  app.get('/admin/api/effective-config', (c) => {
+    const key = assignmentKey(c);
+    if (!key) {
+      return invalidRequest(c);
+    }
+    try {
+      const configStore = store();
+      return c.json({
+        config: effectiveConfigResponse(
+          resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
+            agents: configStore,
+            assignments: configStore,
+          }),
+        ),
+      });
+    } catch (err) {
+      if (isNoResolvedAssignmentError(err) || isUnknownAgentError(err)) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      if (isModelResolutionError(err)) {
+        return c.json({ error: 'model_not_resolvable' }, 422);
+      }
+      return internalError(c, err);
+    }
+  });
+
   return app;
 }
 
 function bearerToken(header: string | undefined): string | undefined {
   const match = header?.match(/^Bearer (.+)$/);
   return match?.[1];
+}
+
+function cookieToken(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const [name, ...valueParts] = part.trim().split('=');
+    if (name === ADMIN_COOKIE) {
+      return decodeURIComponent(valueParts.join('='));
+    }
+  }
+  return undefined;
+}
+
+function setAdminCookie(c: Context, token: string): void {
+  c.header(
+    'set-cookie',
+    `${ADMIN_COOKIE}=${encodeURIComponent(token)}; Path=/admin; HttpOnly; SameSite=Lax`,
+  );
 }
 
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentConfig {
@@ -292,6 +357,18 @@ function isStillAssignedError(err: unknown): boolean {
   return err instanceof Error && err.message.includes('is still assigned to');
 }
 
+function isNoResolvedAssignmentError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.message.startsWith('No enabled agent assignment for ') ||
+      (err.message.startsWith('Assigned agent ') && err.message.endsWith(' is disabled')))
+  );
+}
+
+function isModelResolutionError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('No model configured for agent ');
+}
+
 // Never echo internal error text (raw SQLite messages) to API clients; log it
 // server-side and return a stable retriable status instead.
 function internalError(
@@ -302,25 +379,22 @@ function internalError(
   return c.json({ error: 'internal_error' }, 500);
 }
 
-function unknownProvider(
-  model: string | null | undefined,
-  known: ReadonlySet<string>,
-): string | undefined {
-  // An empty registry means "unknown environment" (route module used without
-  // src/app.ts registrations, e.g. unit tests) — skip validation rather than
-  // rejecting every model.
-  if (!model || known.size === 0) return undefined;
-  const prefix = model.slice(0, model.indexOf('/'));
-  return known.has(prefix) ? undefined : prefix;
-}
-
-function unknownProviderResponse(
-  c: { json(body: object, status: 422): Response },
-  provider: string,
-  known: ReadonlySet<string>,
-): Response {
-  return c.json(
-    { error: 'unknown_provider', provider, knownProviders: [...known].sort() },
-    422,
-  );
+function effectiveConfigResponse(config: EffectiveSlackConfig): object {
+  return {
+    workspaceId: config.workspaceId,
+    channelId: config.channelId,
+    agentId: config.agentId,
+    profile: {
+      id: config.agent.id,
+      name: config.agent.name,
+      description: config.agent.description,
+      enabled: config.agent.enabled,
+    },
+    model: config.model,
+    provider: config.provider,
+    allowedTools: config.allowedTools,
+    instructions: config.instructions,
+    instructionLayers: config.instructionLayers,
+    snapshotHash: config.snapshotHash,
+  };
 }

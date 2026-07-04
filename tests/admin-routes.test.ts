@@ -50,11 +50,15 @@ test('admin API returns 404 for every admin route when FLUE_ADMIN_TOKEN is unset
   try {
     const app = appWithAdmin(store, undefined);
 
-    const response = await app.request('/admin/api/agents', {
+    const apiResponse = await app.request('/admin/api/agents', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    const pageResponse = await app.request('/admin', {
       headers: auth(ADMIN_TOKEN),
     });
 
-    assert.equal(response.status, 404);
+    assert.equal(apiResponse.status, 404);
+    assert.equal(pageResponse.status, 404);
   } finally {
     store.close();
   }
@@ -99,6 +103,34 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
     });
     assert.equal(right.status, 200);
     assert.deepEqual(await right.json(), { agents: [] });
+
+    const page = await app.request('/admin', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Flue Assistant/);
+  } finally {
+    store.close();
+  }
+});
+
+test('admin route accepts a one-time query token and sets an HttpOnly admin cookie', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+
+    const login = await app.request(`/admin?token=${ADMIN_TOKEN}`);
+    assert.equal(login.status, 200);
+    const cookie = login.headers.get('set-cookie') ?? '';
+    assert.match(cookie, /flue_admin=/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Lax/);
+
+    const cookieValue = cookie.split(';')[0] as string;
+    const api = await app.request('/admin/api/agents', {
+      headers: { cookie: cookieValue },
+    });
+    assert.equal(api.status, 200);
   } finally {
     store.close();
   }
@@ -294,6 +326,22 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
       },
     });
 
+    const listAssignments = await app.request('/admin/api/assignments', {
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(listAssignments.status, 200);
+    assert.deepEqual(await listAssignments.json(), {
+      assignments: [
+        {
+          workspaceId: 'T_ADMIN',
+          channelId: 'C_ADMIN',
+          agentId: 'agent_admin',
+          enabled: true,
+          channelPromptAddendum: 'Admin channel addendum.',
+        },
+      ],
+    });
+
     const deleteAssignment = await app.request(
       '/admin/api/assignments?workspaceId=T_ADMIN&channelId=C_ADMIN',
       { method: 'DELETE', headers: auth(ADMIN_TOKEN) },
@@ -328,23 +376,118 @@ test('main app mounts admin routes before flue routing', async () => {
   );
 });
 
-test('admin API rejects a model whose provider prefix is not known', async () => {
+test('admin API accepts a free-text model whose provider prefix is not known', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
+    const freeTextAgent = agent({ id: 'agent_free_text', model: 'anthropc/claude-sonnet-4-6' });
 
     const response = await app.request('/admin/api/agents', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify(agent({ model: 'anthropc/claude-sonnet-4-6' })),
+      body: JSON.stringify(freeTextAgent),
     });
 
-    assert.equal(response.status, 422);
-    assert.deepEqual(await response.json(), {
-      error: 'unknown_provider',
-      provider: 'anthropc',
-      knownProviders: ['local-stub'],
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { agent: freeTextAgent });
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API exposes model suggestions for configured provider sources', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    await withEnv(
+      {
+        ANTHROPIC_API_KEY: 'anthropic-key',
+        OPENAI_API_KEY: undefined,
+        OPENROUTER_API_KEY: undefined,
+      },
+      async () => {
+        const app = appWithAdmin(store);
+
+        const response = await app.request('/admin/api/models', {
+          headers: auth(ADMIN_TOKEN),
+        });
+
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as {
+          automatic: { label: string; value: null };
+          providers: Array<{ id: string; configured: boolean; suggestions: string[] }>;
+        };
+        assert.deepEqual(body.automatic, { label: 'Automatic (provider default)', value: null });
+        assert.equal(
+          body.providers.some(
+            (provider) =>
+              provider.id === 'anthropic' &&
+              provider.configured &&
+              provider.suggestions.includes('anthropic/claude-sonnet-4-6'),
+          ),
+          true,
+        );
+        assert.equal(
+          body.providers.some(
+            (provider) =>
+              provider.id === 'local-stub' &&
+              provider.configured &&
+              provider.suggestions.includes('local-stub/admin-agent'),
+          ),
+          true,
+        );
+      },
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('effective config endpoint resolves through the runtime assignment path', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    store.createAgent(
+      agent({
+        instructions: 'Base profile instructions from the admin test.',
+        model: 'local-stub/effective-model',
+        allowedTools: ['lookup_channel_brief'],
+      }),
+    );
+    store.putAssignment({
+      workspaceId: 'T_ADMIN',
+      channelId: 'C_ADMIN',
+      agentId: 'agent_admin',
+      enabled: true,
+      channelPromptAddendum: 'Channel addendum from the admin test.',
     });
+
+    const response = await app.request(
+      '/admin/api/effective-config?workspaceId=T_ADMIN&channelId=C_ADMIN',
+      { headers: auth(ADMIN_TOKEN) },
+    );
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      config: {
+        agentId: string;
+        model: string;
+        provider: string;
+        allowedTools: string[];
+        instructions: string;
+        instructionLayers: Array<{ source: string; text: string }>;
+      };
+    };
+    assert.equal(body.config.agentId, 'agent_admin');
+    assert.equal(body.config.model, 'local-stub/effective-model');
+    assert.equal(body.config.provider, 'local-stub');
+    assert.deepEqual(body.config.allowedTools, ['lookup_channel_brief']);
+    assert.match(body.config.instructions, /Base profile instructions from the admin test\./);
+    assert.match(body.config.instructions, /Channel addendum from the admin test\./);
+    assert.match(body.config.instructions, /Do not reveal Slack tokens/);
+    assert.deepEqual(
+      body.config.instructionLayers.map((layer) => layer.source),
+      ['profile', 'channel', 'runtime', 'guardrail'],
+    );
   } finally {
     store.close();
   }

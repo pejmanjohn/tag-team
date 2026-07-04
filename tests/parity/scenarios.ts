@@ -671,12 +671,16 @@ export const scenarios: Scenario[] = [
  * with a printed `EXCEPTION` note, and an unexpected PASS fails the test as a
  * stale exception.
  */
-export function runScenarioSuite(lane: Lane, exceptions: ParityException[] = []): void {
+export function runScenarioSuite(
+  lane: Lane,
+  exceptions: ParityException[] = [],
+  options: { skip?: string | boolean | undefined } = {},
+): void {
   for (const scenario of scenarios) {
     const exception = exceptions.find(
       (entry) => entry.scenarioId === scenario.id && entry.lane === lane.name,
     );
-    test(`${lane.name} · ${scenario.id} ${scenario.title}`, async () => {
+    test(`${lane.name} · ${scenario.id} ${scenario.title}`, { skip: options.skip }, async () => {
       const instance = await lane.start(scenario.config);
       let scenarioError: unknown;
       try {

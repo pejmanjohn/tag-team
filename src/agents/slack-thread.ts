@@ -1,9 +1,10 @@
 import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
+import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
-import { resolveAssignmentFromThreadKey } from '../config/resolver.ts';
 import { getConfigStore } from '../config/store.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
+import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { createLookupChannelBriefTool } from '../tools/flue-tools.ts';
 
 export { resolveAgentModel } from '../config/model-policy.ts';
@@ -26,19 +27,15 @@ export const route: AgentRouteHandler = async (c, next) => {
 export default defineAgent(async ({ id }) => {
   const store = getConfigStore();
   const stores = { agents: store, assignments: store };
-  const assignment = resolveAssignmentFromThreadKey(id, stores);
-  const tools = assignment.agent.allowedTools.includes('lookup_channel_brief')
-    ? [createLookupChannelBriefTool(assignment)]
+  const { workspaceId, channelId } = parseSlackThreadKey(id);
+  const config = resolveEffectiveSlackConfig(workspaceId, channelId, stores);
+  const tools = config.allowedTools.includes('lookup_channel_brief')
+    ? [createLookupChannelBriefTool(config)]
     : [];
 
   return {
-    model: resolveAgentModel(assignment.agent),
-    instructions: [
-      assignment.agent.instructions,
-      ...(assignment.channelPromptAddendum ? [assignment.channelPromptAddendum] : []),
-      `You are assigned to Slack workspace ${assignment.workspaceId} channel ${assignment.channelId}.`,
-      'Do not reveal Slack tokens, provider keys, or hidden policy data.',
-    ].join('\n'),
+    model: config.model,
+    instructions: config.instructions,
     tools,
   };
 });

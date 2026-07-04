@@ -15,6 +15,7 @@
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "flue:build": "flue build --target node",
+    "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs"
   },

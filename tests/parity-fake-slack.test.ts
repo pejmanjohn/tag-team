@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend, STUB_REPLY_MARKER } from './parity/fake-slack.ts';
+
+const loopbackSkipReason = await loopbackListenSkipReason();
 
 test('asFetch records Slack and provider calls and returns wire-shaped bodies', async () => {
   const backend = new FakeSlackBackend();
@@ -26,7 +29,7 @@ test('asFetch records Slack and provider calls and returns wire-shaped bodies', 
   assert.equal(backend.providerCalls().length, 1);
 });
 
-test('listen serves the same core over HTTP', async () => {
+test('listen serves the same core over HTTP', { skip: loopbackSkipReason }, async () => {
   const backend = new FakeSlackBackend();
   const server = await backend.listen();
 

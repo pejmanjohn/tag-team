@@ -11,6 +11,7 @@ import { WebClient } from '@slack/web-api';
 
 import { defaultBotIdentity, IdentityStore } from '../src/config/identity.ts';
 import { checkIdentity, classifySlackIconUrl } from '../src/slack/identity-check.ts';
+import { loopbackListenSkipReason } from './helpers/listen.ts';
 import { FakeSlackBackend } from './parity/fake-slack.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -27,6 +28,7 @@ const LIVE_DEFAULT_GRAVATAR_URL =
   'https://secure.gravatar.com/avatar/1035a1e39388cffdb24d3f02e9b82f78.jpg?s=512&d=https%3A%2F%2Fa.slack-edge.com%2Fdf10d%2Fimg%2Favatars%2Fava_0005-512.png';
 const BARE_GRAVATAR_URL = 'https://secure.gravatar.com/avatar/1035a1e39388cffdb24d3f02e9b82f78.jpg?s=512&d=identicon';
 const UNKNOWN_ICON_URL = 'https://cdn.example.test/flue-assistant.png';
+const loopbackSkipReason = await loopbackListenSkipReason();
 
 test('IdentityStore returns the seeded install-wide avatar path', () => {
   const identity = new IdentityStore().get();
@@ -79,7 +81,7 @@ test('Slack icon URL classifier separates custom, default, and unknown URLs', ()
   assert.equal(classifySlackIconUrl('not a url'), 'unknown');
 });
 
-test('checkIdentity compares manifest name and icon state through fake Slack', async () => {
+test('checkIdentity compares manifest name and icon state through fake Slack', { skip: loopbackSkipReason }, async () => {
   const backend = new FakeSlackBackend({
     slack: {
       identity: {
@@ -117,7 +119,7 @@ test('checkIdentity compares manifest name and icon state through fake Slack', a
   }
 });
 
-test('checkIdentity reports a name mismatch from fake Slack', async () => {
+test('checkIdentity reports a name mismatch from fake Slack', { skip: loopbackSkipReason }, async () => {
   const backend = new FakeSlackBackend({
     slack: {
       identity: {
@@ -146,7 +148,7 @@ test('checkIdentity reports a name mismatch from fake Slack', async () => {
   }
 });
 
-test('verify-identity-live reports custom, default, and unknown icon states against fake Slack', async () => {
+test('verify-identity-live reports custom, default, and unknown icon states against fake Slack', { skip: loopbackSkipReason }, async () => {
   const backend = new FakeSlackBackend();
   const server = await backend.listen();
 
