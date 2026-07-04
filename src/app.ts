@@ -1,9 +1,11 @@
-import { registerProvider } from '@flue/runtime';
+import { observe, registerProvider } from '@flue/runtime';
 import { flue } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from './admin/routes.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
+import { setObservedSlackStatus } from './slack/status-registry.ts';
+import { parseSlackThreadKey } from './slack/thread-key.ts';
 
 // Provider registrations run at module scope so they are in place before any
 // agent resolves its model. Registering `cloudflare-workers-ai` is REQUIRED:
@@ -53,6 +55,23 @@ if (process.env.LOCAL_STUB_URL) {
   });
   recordRegisteredProvider('local-stub');
 }
+
+observe((event) => {
+  if (event.type !== 'tool_start') {
+    return;
+  }
+  if (typeof event.instanceId !== 'string') {
+    return;
+  }
+  try {
+    parseSlackThreadKey(event.instanceId);
+  } catch {
+    return;
+  }
+  setObservedSlackStatus(event.instanceId, {
+    text: `is running ${event.toolName}`,
+  });
+});
 
 const app = new Hono();
 app.route('/', createAdminRoutes());

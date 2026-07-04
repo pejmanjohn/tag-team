@@ -2,6 +2,7 @@
 import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
+import { resolveAgentModel } from '../config/model-policy.ts';
 import { resolveAssignment } from '../config/resolver.ts';
 import { getConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
@@ -12,7 +13,10 @@ import {
   type SlackThreadRegistry,
 } from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
+import type { SlackStatusUpdate } from '../slack/replies.ts';
+import { registerSlackStatusTurn } from '../slack/status-registry.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
+import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import type { NormalizedSlackTurn, SlackEventFixture } from '../slack/types.ts';
 import {
@@ -222,38 +226,65 @@ async function runTurn(
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
+  const conversationKey = slackThreadKey(turn);
+  const statusTurn = registerSlackStatusTurn(conversationKey, presenter);
 
   // 1. Visible work: set status; if it is rejected, post a durable progress
   //    placeholder so the user still sees work in-flight before the final.
-  const statusSet = await presenter.setStatus('checking_context');
-  if (!statusSet) {
-    await presenter.postProgress(`${assignment.agent.name} is checking the Slack thread context.`);
-  }
-
-  // 2. Hydrate bounded context (degrades to current-message-only on failure).
-  const context = await hydrateSlackContextViaWebClient(client, turn);
-  const prompt = assembleSlackPrompt(turn, context);
-
-  // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
-  //    in a finally so a status that was actually set is cleared even if
-  //    delivery throws (old-lane parity: the clear happened in a finally; keeps
-  //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
-  //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
-  //    the sanitized static final (no provider error text ever reaches Slack).
   try {
-    await presenter.setStatus('generating_answer');
+    const statusSet = await statusTurn.setStatus(readingThreadStatus());
+    if (!statusSet) {
+      await presenter.postProgress(`${assignment.agent.name} is reading the thread.`);
+    }
+
+    // 2. Hydrate bounded context (degrades to current-message-only on failure).
+    const context = await hydrateSlackContextViaWebClient(client, turn);
+    await statusTurn.setStatus(hydratedContextStatus(context));
+    const prompt = assembleSlackPrompt(turn, context);
+
+    // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
+    //    in a finally so a status that was actually set is cleared even if
+    //    delivery throws (old-lane parity: the clear happened in a finally; keeps
+    //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
+    //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
+    //    the sanitized static final (no provider error text ever reaches Slack).
+    await statusTurn.setStatus(modelStatus(resolveAgentModel(assignment.agent)));
     let text: string;
     try {
       text = await promptAgent(turn, prompt, selfBaseUrl);
     } catch (err) {
       console.error('[slack-flue] provider call failed:', sanitizeError(err));
+      await statusTurn.drain();
       await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
       return;
     }
+    await statusTurn.drain();
     await presenter.deliverFinal(text, 'markdown');
   } finally {
-    await presenter.clearStatus();
+    try {
+      await presenter.clearStatus();
+    } finally {
+      statusTurn.close();
+    }
   }
+}
+
+function readingThreadStatus(): SlackStatusUpdate {
+  return { text: 'is reading the thread' };
+}
+
+function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
+  const count = context.messages.length;
+  const noun = count === 1 ? 'message' : 'messages';
+  return {
+    text: `is using ${count} hydrated ${noun} from ${context.mode} context`,
+  };
+}
+
+function modelStatus(modelId: string): SlackStatusUpdate {
+  return {
+    text: `is using ${modelId}`,
+  };
 }
 
 /**

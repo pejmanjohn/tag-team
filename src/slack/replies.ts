@@ -2,12 +2,12 @@ import { renderSlackMessage, type RenderedSlackMessage, type SlackReplyFormat } 
 
 export type SlackReplyKind = 'progress' | 'final';
 
-export type SlackPresentationStage =
-  | 'checking_context'
-  | 'gathering_channel_context'
-  | 'channel_context_ready'
-  | 'generating_answer'
-  | 'provider_failed';
+export interface SlackStatusUpdate {
+  text: string;
+  loadingMessages?: readonly string[];
+}
+
+export type SlackPresentationStage = SlackStatusUpdate;
 
 export interface SlackReplyInput {
   channelId: string;
@@ -144,48 +144,28 @@ export class LocalSlackReplySink implements SlackReplySink {
   }
 }
 
-const STATUS_TEXT: Record<SlackPresentationStage, string> = {
-  checking_context: 'is checking context',
-  gathering_channel_context: 'is gathering channel context',
-  channel_context_ready: 'has channel context ready',
-  generating_answer: 'is composing an answer',
-  provider_failed: 'hit a provider error',
-};
-
-const LOADING_MESSAGES: Record<SlackPresentationStage, string[]> = {
-  checking_context: [
-    'Checking the Slack thread context',
-    'Reviewing the channel assignment',
-    'Preparing a concise answer',
-  ],
-  gathering_channel_context: [
-    'Gathering channel context',
-    'Reading the configured channel brief',
-    'Checking allowed Slack context tools',
-  ],
-  channel_context_ready: [
-    'Channel context gathered',
-    'Selecting the useful details',
-    'Preparing the answer',
-  ],
-  generating_answer: [
-    'Composing answer',
-    'Keeping the reply concise',
-    'Formatting the final response',
-  ],
-  provider_failed: [
-    'Provider call failed',
-    'Preparing a safe failure response',
-    'Clearing the working state',
-  ],
-};
+const FALLBACK_STATUS_TEXT = 'is working on the request';
 
 export function slackStatusText(stage: SlackPresentationStage): string {
-  return STATUS_TEXT[stage] ?? 'is working on the request';
+  return stage.text.trim() || FALLBACK_STATUS_TEXT;
 }
 
 export function slackLoadingMessages(stage: SlackPresentationStage): string[] {
-  return LOADING_MESSAGES[stage] ?? ['Working on the request'];
+  const loadingMessages = stage.loadingMessages
+    ?.map((message) => message.trim())
+    .filter((message) => message.length > 0);
+  if (loadingMessages && loadingMessages.length > 0) {
+    return loadingMessages;
+  }
+
+  // Fallback only when a caller has no separate loading fact; derive it from
+  // the same event-derived status text instead of rotating canned copy.
+  return [statusToLoadingMessage(slackStatusText(stage))];
+}
+
+function statusToLoadingMessage(status: string): string {
+  const withoutSlackPrefix = status.replace(/^is\s+/i, '');
+  return withoutSlackPrefix.charAt(0).toUpperCase() + withoutSlackPrefix.slice(1);
 }
 
 export function createSlackPresentationEvent(

@@ -9,7 +9,12 @@ import {
   dmMessage,
   topLevelChannelMessage,
 } from '../helpers/slack-fixtures.ts';
-import { RAW_PROVIDER_ERROR_MARKER, STUB_REPLY_MARKER, isMarkdownPost } from './fake-slack.ts';
+import {
+  RAW_PROVIDER_ERROR_MARKER,
+  STUB_REPLY_MARKER,
+  TOOL_TRIGGER,
+  isMarkdownPost,
+} from './fake-slack.ts';
 import type { ParityException } from './exceptions.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
@@ -75,9 +80,19 @@ export const scenarios: Scenario[] = [
       );
 
       const statuses = instance.backend.statusCalls();
+      const nonEmptyStatusTexts = statuses
+        .map((entry) => String(entry.body.status ?? '').trim())
+        .filter(Boolean);
+      const distinctStatusTexts = [...new Set(nonEmptyStatusTexts)];
+      assert.ok(distinctStatusTexts.length >= 3, 'expected at least three distinct status texts');
+      assert.match(distinctStatusTexts[0] ?? '', /reading the thread/);
       assert.ok(
-        statuses.some((entry) => String(entry.body.status).trim() !== ''),
-        'expected at least one non-empty status',
+        distinctStatusTexts.some((text) => /\d+ hydrated message/.test(text)),
+        'expected one status to include the hydrated message count',
+      );
+      assert.ok(
+        distinctStatusTexts.some((text) => text.includes('local-stub/parity-stub-1')),
+        'expected one status to name the resolved model id',
       );
       const lastStatus = statuses.at(-1);
       assert.ok(lastStatus);
@@ -322,6 +337,12 @@ export const scenarios: Scenario[] = [
       assert.ok(
         !final.text.includes(RAW_PROVIDER_ERROR_MARKER),
         'raw provider error must not leak to the wire',
+      );
+      assert.ok(
+        instance.backend
+          .statusCalls()
+          .every((entry) => !String(entry.body.status).includes(RAW_PROVIDER_ERROR_MARKER)),
+        'raw provider error must not leak to status text',
       );
 
       const lastStatus = instance.backend.statusCalls().at(-1);
@@ -658,6 +679,58 @@ export const scenarios: Scenario[] = [
       const withoutAddendum = instance.backend.providerCalls().at(-1);
       assert.ok(withoutAddendum);
       assert.doesNotMatch(JSON.stringify(withoutAddendum.body), /CHANNEL_ADDENDUM_MARKER/);
+    },
+  },
+  {
+    id: 'S26',
+    title: 'tool-triggered turns surface lookup_channel_brief status without changing final delivery',
+    config: {},
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_TOOL_STATUS',
+          event: {
+            text: `<@U_BOT> ${TOOL_TRIGGER}`,
+            ts: '1782771100.000100',
+            event_ts: '1782771100.000100',
+          },
+        }),
+      );
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1);
+      const [final] = finals;
+      assert.ok(final);
+      assert.match(final.text, /Tool result:/);
+      assert.match(final.text, /exec leadership channel tracks board prep/);
+
+      const toolStatusIndex = instance.backend.wireLog.findIndex(
+        (entry) =>
+          entry.method === 'assistant.threads.setStatus' &&
+          String(entry.body.status).includes('lookup_channel_brief'),
+      );
+      assert.ok(toolStatusIndex >= 0, 'expected a lookup_channel_brief status on the wire');
+      assert.ok(toolStatusIndex < final.index, 'tool status must precede the final');
+    },
+  },
+  {
+    id: 'S27',
+    title: 'tool-triggered turns still deliver one final when status updates reject',
+    config: { slack: { rejectSetStatus: true } },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_TOOL_STATUS_REJECT',
+          event: {
+            text: `<@U_BOT> ${TOOL_TRIGGER}`,
+            ts: '1782771101.000100',
+            event_ts: '1782771101.000100',
+          },
+        }),
+      );
+      await instance.quiesce();
+      assert.equal(instance.backend.finals().length, 1);
     },
   },
 ];

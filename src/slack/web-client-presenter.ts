@@ -4,7 +4,7 @@ import { renderSlackMessage, type SlackReplyFormat } from './message-format.ts';
 import {
   slackLoadingMessages,
   slackStatusText,
-  type SlackPresentationStage,
+  type SlackStatusUpdate,
 } from './replies.ts';
 
 /**
@@ -27,10 +27,10 @@ export interface SlackPresenterTarget {
 
 /**
  * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
- * presentation path: it carries forward the status texts / loading messages and
- * fallback ordering that the deleted hand-rolled lane once implemented (in the
- * former src/runtime/slack-thread-runner.ts + src/slack/web-api-replies.ts),
- * now as a fresh WebClient-based module.
+ * presentation path: it preserves the fallback ordering that the deleted
+ * hand-rolled lane once implemented (in the former
+ * src/runtime/slack-thread-runner.ts + src/slack/web-api-replies.ts), now as a
+ * fresh WebClient-based module.
  *
  * Status policy: attempted per stage but latched off after the first rejection
  * for the turn (no retry storm — scenario S16); a clear is only issued when a
@@ -50,8 +50,8 @@ export class WebClientPresenter {
     private readonly target: SlackPresenterTarget,
   ) {}
 
-  /** Attempt to set the Assistant thread status for a stage. Returns whether it stuck. */
-  async setStatus(stage: SlackPresentationStage): Promise<boolean> {
+  /** Attempt to set the Assistant thread status. Returns whether it stuck. */
+  async setStatus(update: SlackStatusUpdate): Promise<boolean> {
     if (this.statusFailed) {
       return false;
     }
@@ -59,8 +59,8 @@ export class WebClientPresenter {
       await this.client.assistant.threads.setStatus({
         channel_id: this.target.channelId,
         thread_ts: this.target.threadTs,
-        status: slackStatusText(stage),
-        loading_messages: slackLoadingMessages(stage),
+        status: slackStatusText(update),
+        loading_messages: slackLoadingMessages(update),
       });
       this.statusWasSet = true;
       return true;

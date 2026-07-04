@@ -6,7 +6,11 @@ import {
   renderSlackMessage,
   slackMarkdownBlockTextLimit,
 } from '../src/slack/message-format.ts';
-import { LocalSlackReplySink } from '../src/slack/replies.ts';
+import {
+  LocalSlackReplySink,
+  slackLoadingMessages,
+  slackStatusText,
+} from '../src/slack/replies.ts';
 
 test('standard Markdown final replies render as Slack markdown blocks', () => {
   const markdown = [
@@ -87,4 +91,13 @@ test('reply sinks default final replies to markdown and progress replies to plai
   assert.equal(sink.posts[0]?.rendered.mrkdwn, false);
   assert.equal(sink.posts[1]?.format, 'markdown');
   assert.deepEqual(sink.posts[1]?.rendered.blocks, [{ type: 'markdown', text: '**Done**' }]);
+});
+
+test('status updates use factual text and derive loading copy from the same fact', () => {
+  const update = { text: 'is using 2 hydrated messages from channel_history context' };
+
+  assert.equal(slackStatusText(update), update.text);
+  assert.deepEqual(slackLoadingMessages(update), [
+    'Using 2 hydrated messages from channel_history context',
+  ]);
 });
