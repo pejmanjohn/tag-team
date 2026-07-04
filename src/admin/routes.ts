@@ -53,6 +53,7 @@ const assignmentSchema = v.object({
   channelId: nonEmptyString,
   agentId: nonEmptyString,
   enabled: v.boolean(),
+  channelLabel: v.optional(v.string()),
   channelPromptAddendum: v.optional(v.string()),
 });
 
@@ -307,6 +308,7 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
     channelId: input.channelId,
     agentId: input.agentId,
     enabled: input.enabled,
+    ...(input.channelLabel !== undefined ? { channelLabel: input.channelLabel } : {}),
     ...(input.channelPromptAddendum !== undefined
       ? { channelPromptAddendum: input.channelPromptAddendum }
       : {}),

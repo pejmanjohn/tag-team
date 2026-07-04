@@ -16,6 +16,7 @@ export interface ChannelAssignment {
   channelId: string;
   agentId: string;
   enabled: boolean;
+  channelLabel?: string;
   channelPromptAddendum?: string;
 }
 

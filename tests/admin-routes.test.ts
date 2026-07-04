@@ -297,6 +297,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
         enabled: true,
+        channelLabel: 'eng-releases',
         channelPromptAddendum: 'Admin channel addendum.',
       }),
     });
@@ -307,6 +308,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
         enabled: true,
+        channelLabel: 'eng-releases',
         channelPromptAddendum: 'Admin channel addendum.',
       },
     });
@@ -322,6 +324,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
         channelId: 'C_ADMIN',
         agentId: 'agent_admin',
         enabled: true,
+        channelLabel: 'eng-releases',
         channelPromptAddendum: 'Admin channel addendum.',
       },
     });
@@ -337,6 +340,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
           channelId: 'C_ADMIN',
           agentId: 'agent_admin',
           enabled: true,
+          channelLabel: 'eng-releases',
           channelPromptAddendum: 'Admin channel addendum.',
         },
       ],

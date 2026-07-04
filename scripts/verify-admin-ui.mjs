@@ -14,6 +14,7 @@ import {
 const ADMIN_TOKEN = 'admin-ui-admin-token';
 const WORKSPACE_ID = 'T_ADMIN_UI';
 const CHANNEL_ID = 'C_ADMIN_UI';
+const CHANNEL_LABEL = 'eng-releases';
 const AGENT_ID = 'agent_admin_ui';
 const MODEL_SPECIFIER = 'local-stub/admin-ui-model';
 const FIRST_ADDENDUM = 'ADMIN_UI_ADDENDUM_V1: prefer release readiness.';
@@ -106,13 +107,16 @@ try {
   const assigned = await adminBody(app, 'PUT', '/admin/api/assignments', {
     workspaceId: WORKSPACE_ID,
     channelId: CHANNEL_ID,
+    channelLabel: CHANNEL_LABEL,
     agentId: AGENT_ID,
     enabled: true,
     channelPromptAddendum: FIRST_ADDENDUM,
   });
   record(
-    'PUT /admin/api/assignments creates the addendum assignment',
-    assigned.status === 200 && assigned.body?.assignment?.channelPromptAddendum === FIRST_ADDENDUM,
+    'PUT /admin/api/assignments creates the labeled addendum assignment',
+    assigned.status === 200 &&
+      assigned.body?.assignment?.channelLabel === CHANNEL_LABEL &&
+      assigned.body?.assignment?.channelPromptAddendum === FIRST_ADDENDUM,
     `status=${assigned.status}`,
   );
 
@@ -129,6 +133,7 @@ try {
   const edited = await adminBody(app, 'PUT', '/admin/api/assignments', {
     workspaceId: WORKSPACE_ID,
     channelId: CHANNEL_ID,
+    channelLabel: CHANNEL_LABEL,
     agentId: AGENT_ID,
     enabled: true,
     channelPromptAddendum: SECOND_ADDENDUM,

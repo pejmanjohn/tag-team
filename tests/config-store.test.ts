@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import { resolveAssignment } from '../src/config/resolver.ts';
@@ -55,6 +56,7 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', () => {
   assert.equal(updated.model, 'local-stub/agent-updated');
 
   const createdAssignment = assignment({
+    channelLabel: 'eng-releases',
     channelPromptAddendum: 'Prefer channel-local launch context.',
   });
   store.putAssignment(createdAssignment);
@@ -134,6 +136,87 @@ test('SqliteConfigStore survives restart on a file database', () => {
       channelPromptAddendum: 'Persist this channel rule.',
     });
     second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SqliteConfigStore migrates pre-existing assignment tables to support channel labels', () => {
+  const { dir, path } = tempDbPath();
+  const createdAgent = agent({ id: 'agent_legacy' });
+
+  try {
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE config_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE config_agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        model TEXT,
+        default_models_json TEXT NOT NULL,
+        allowed_tools_json TEXT NOT NULL
+      );
+      CREATE TABLE config_assignments (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        channel_prompt_addendum TEXT,
+        PRIMARY KEY (workspace_id, channel_id)
+      );
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO config_agents (
+          id, name, description, instructions, enabled, model,
+          default_models_json, allowed_tools_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        createdAgent.id,
+        createdAgent.name,
+        createdAgent.description,
+        createdAgent.instructions,
+        1,
+        null,
+        JSON.stringify(createdAgent.defaultModels),
+        JSON.stringify(createdAgent.allowedTools),
+      );
+    legacy
+      .prepare(
+        `INSERT INTO config_assignments (
+          workspace_id, channel_id, agent_id, enabled, channel_prompt_addendum
+        ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run('T_LEGACY', 'C_LEGACY', createdAgent.id, 1, 'Legacy channel addendum.');
+    legacy.close();
+
+    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    assert.deepEqual(store.getAssignment('T_LEGACY', 'C_LEGACY'), {
+      workspaceId: 'T_LEGACY',
+      channelId: 'C_LEGACY',
+      agentId: createdAgent.id,
+      enabled: true,
+      channelPromptAddendum: 'Legacy channel addendum.',
+    });
+
+    const labeled = store.putAssignment({
+      workspaceId: 'T_LEGACY',
+      channelId: 'C_LEGACY',
+      agentId: createdAgent.id,
+      enabled: true,
+      channelLabel: 'eng-releases',
+      channelPromptAddendum: 'Legacy channel addendum.',
+    });
+    assert.equal(labeled.channelLabel, 'eng-releases');
+    assert.equal(store.getAssignment('T_LEGACY', 'C_LEGACY')?.channelLabel, 'eng-releases');
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

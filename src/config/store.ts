@@ -44,6 +44,7 @@ interface AssignmentRow {
   channel_id: string;
   agent_id: string;
   enabled: number;
+  channel_label: string | null;
   channel_prompt_addendum: string | null;
 }
 
@@ -78,10 +79,12 @@ export class SqliteConfigStore {
         channel_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
         enabled INTEGER NOT NULL,
+        channel_label TEXT,
         channel_prompt_addendum TEXT,
         PRIMARY KEY (workspace_id, channel_id)
       );`,
     );
+    this.ensureAssignmentChannelLabelColumn();
     this.seedOnce(seed);
   }
 
@@ -183,11 +186,12 @@ export class SqliteConfigStore {
     this.db
       .prepare(
         `INSERT INTO config_assignments (
-          workspace_id, channel_id, agent_id, enabled, channel_prompt_addendum
-        ) VALUES (?, ?, ?, ?, ?)
+          workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum
+        ) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
           agent_id = excluded.agent_id,
           enabled = excluded.enabled,
+          channel_label = excluded.channel_label,
           channel_prompt_addendum = excluded.channel_prompt_addendum`,
       )
       .run(
@@ -195,6 +199,7 @@ export class SqliteConfigStore {
         assignment.channelId,
         assignment.agentId,
         assignment.enabled ? 1 : 0,
+        assignment.channelLabel ?? null,
         assignment.channelPromptAddendum ?? null,
       );
     return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
@@ -272,6 +277,15 @@ export class SqliteConfigStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
   }
+
+  private ensureAssignmentChannelLabelColumn(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(config_assignments)')
+      .all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'channel_label')) {
+      this.db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT;');
+    }
+  }
 }
 
 function agentStatementValues(agent: CustomAgentConfig): AgentStatementValues {
@@ -319,6 +333,7 @@ function rowToAssignment(row: AssignmentRow): ChannelAssignment {
     channelId: row.channel_id,
     agentId: row.agent_id,
     enabled: Boolean(row.enabled),
+    ...(row.channel_label ? { channelLabel: row.channel_label } : {}),
     ...(row.channel_prompt_addendum
       ? { channelPromptAddendum: row.channel_prompt_addendum }
       : {}),
