@@ -28,7 +28,7 @@ export interface SlackPresenterTarget {
   threadTs: string;
   agentName: string;
   agentId: string;
-  modelLabel: string;
+  modelLabel?: string | undefined;
   publicUrl?: string | undefined;
   userId?: string;
   workspaceId?: string;

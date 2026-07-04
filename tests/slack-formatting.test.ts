@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  appendSlackReplyFooter,
   buildSlackAdminUrl,
   renderChannelOnboarding,
   renderSlackReplyFooterBlock,
@@ -107,6 +108,48 @@ test('reply footers render profile, model, and optional configure link', () => {
       text: 'Release Scribe | local-stub/parity-stub-1 | Configure',
     },
   ]);
+
+  // An unresolvable model omits the segment entirely — no 'unresolved model'
+  // diagnostic leaks into the user-facing footer.
+  const noModel = renderSlackReplyFooterBlock({
+    profileName: 'Release Scribe',
+    agentId: 'agent_release_scribe',
+    publicUrl: 'https://demo.example',
+  });
+  assert.equal(
+    noModel.elements[0]?.text,
+    'Release Scribe | <https://demo.example/admin?agent=agent_release_scribe|Configure>',
+  );
+});
+
+test('buildSlackAdminUrl only links http(s) bases without userinfo', () => {
+  assert.equal(buildSlackAdminUrl('https://demo.example', { agentId: 'a' }), 'https://demo.example/admin?agent=a');
+  assert.equal(buildSlackAdminUrl('http://localhost:8789', { agentId: 'a' }), 'http://localhost:8789/admin?agent=a');
+  // Non-http(s) scheme, embedded userinfo, or an unparseable base -> no link.
+  assert.equal(buildSlackAdminUrl('ftp://internal-host', { agentId: 'a' }), undefined);
+  assert.equal(buildSlackAdminUrl('https://evil.example@real-host', { agentId: 'a' }), undefined);
+  assert.equal(buildSlackAdminUrl('not a url', { agentId: 'a' }), undefined);
+  assert.equal(buildSlackAdminUrl(undefined), undefined);
+});
+
+test('a plain_text final with a footer keeps its content literal (not markdown-parsed)', () => {
+  const plain = renderSlackMessage('The model provider *failed* to respond.', 'plain_text');
+  assert.equal(plain.mrkdwn, false);
+  assert.equal(plain.blocks, undefined);
+
+  const withFooter = appendSlackReplyFooter(plain, {
+    profileName: 'Exec Brief',
+    modelLabel: 'local-stub/parity-stub-1',
+    agentId: 'agent_exec_brief',
+  });
+  const [content, footer] = withFooter.blocks ?? [];
+  // Content stays a literal plain_text section, NOT a markdown block that would
+  // parse the '*failed*' as bold.
+  assert.deepEqual(content, {
+    type: 'section',
+    text: { type: 'plain_text', text: 'The model provider *failed* to respond.', emoji: false },
+  });
+  assert.equal(footer?.type, 'context');
 });
 
 test('channel onboarding discloses mention-only, bounded context, no monitoring, and a Configure link', () => {

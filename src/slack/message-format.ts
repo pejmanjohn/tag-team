@@ -18,7 +18,18 @@ export interface SlackContextBlock {
   elements: SlackMrkdwnTextElement[];
 }
 
-export type SlackMessageBlock = SlackMarkdownBlock | SlackContextBlock;
+export interface SlackPlainTextObject {
+  type: 'plain_text';
+  text: string;
+  emoji: false;
+}
+
+export interface SlackSectionBlock {
+  type: 'section';
+  text: SlackPlainTextObject;
+}
+
+export type SlackMessageBlock = SlackMarkdownBlock | SlackSectionBlock | SlackContextBlock;
 
 export interface RenderedSlackMessage {
   text: string;
@@ -33,7 +44,9 @@ export interface SlackAdminUrlParams {
 
 export interface SlackReplyFooter {
   profileName: string;
-  modelLabel: string;
+  // Omitted when the model cannot be resolved — the footer drops the segment
+  // rather than leaking a diagnostic placeholder into user-facing chrome.
+  modelLabel?: string | undefined;
   agentId: string;
   publicUrl?: string | undefined;
 }
@@ -70,9 +83,7 @@ export function appendSlackReplyFooter(
   footer: SlackReplyFooter,
 ): RenderedSlackMessage {
   const contentBlocks =
-    rendered.blocks && rendered.blocks.length > 0
-      ? rendered.blocks
-      : [{ type: 'markdown' as const, text: truncateText(rendered.text, slackMarkdownBlockTextLimit) }];
+    rendered.blocks && rendered.blocks.length > 0 ? rendered.blocks : [contentBlockFor(rendered)];
 
   return {
     text: rendered.text,
@@ -80,19 +91,26 @@ export function appendSlackReplyFooter(
   };
 }
 
+// Wrap a block-less rendered message so the footer can be attached. A plain_text
+// final (mrkdwn:false) must stay literal — a markdown block would parse it, so
+// it becomes a plain_text section block; markdown/mrkdwn content keeps parsing.
+function contentBlockFor(rendered: RenderedSlackMessage): SlackMessageBlock {
+  const text = truncateText(rendered.text, slackMarkdownBlockTextLimit);
+  if (rendered.mrkdwn === false) {
+    return { type: 'section', text: { type: 'plain_text', text, emoji: false } };
+  }
+  return { type: 'markdown', text };
+}
+
 export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackContextBlock {
+  const segments = [escapeSlackControlCharacters(footer.profileName)];
+  if (footer.modelLabel) {
+    segments.push(escapeSlackControlCharacters(footer.modelLabel));
+  }
+  segments.push(renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }));
   return {
     type: 'context',
-    elements: [
-      {
-        type: 'mrkdwn',
-        text: [
-          escapeSlackControlCharacters(footer.profileName),
-          escapeSlackControlCharacters(footer.modelLabel),
-          renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }),
-        ].join(' | '),
-      },
-    ],
+    elements: [{ type: 'mrkdwn', text: segments.join(' | ') }],
   };
 }
 
@@ -140,6 +158,14 @@ export function buildSlackAdminUrl(
     // base's own path and trailing slash are irrelevant.
     url = new URL('/admin', trimmed);
   } catch {
+    return undefined;
+  }
+
+  // Only http(s) may become a clickable Configure link. A misconfigured
+  // publicUrl with another scheme (ftp:, javascript:) or embedded userinfo
+  // (https://evil@real-host) falls back to the plain "Configure" label rather
+  // than presenting a misleading link under a trusted affordance.
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
     return undefined;
   }
 

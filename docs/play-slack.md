@@ -12,6 +12,7 @@ Add bot scopes:
 - `chat:write`
 - `assistant:write`
 - `channels:history` (new for public-channel thread continuation and explicit top-level mention context)
+- `channels:read` (required for Slack to deliver `member_joined_channel`, which drives the channel onboarding disclosure)
 - `im:history` (new for direct-message replies and DM thread context)
 - `users:read` (required by `scripts/verify-identity-live.mjs` to verify the bot name and avatar)
 

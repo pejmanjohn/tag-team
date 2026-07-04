@@ -948,6 +948,65 @@ export const scenarios: Scenario[] = [
       assert.equal(instance.backend.wireLog.length, 0);
     },
   },
+  {
+    id: 'S32',
+    title: 'onboarding is fail-closed: bot join in an unassigned channel stays silent',
+    // No wildcard in this seed, so an unassigned channel has no resolvable
+    // assignment. The bot-join onboarding must obey the same fail-closed gate as
+    // every turn: greet only where the bot is actually configured.
+    config: {
+      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+      configSeed: {
+        agents: [
+          {
+            id: 'agent_scoped',
+            name: 'Scoped Profile',
+            description: 'Assigned to exactly one channel.',
+            instructions: 'Reply.',
+            enabled: true,
+            defaultModels: {
+              claude: 'anthropic/parity-claude',
+              'workers-ai': '@cf/parity/model',
+            },
+            allowedTools: [],
+          },
+        ],
+        assignments: [
+          {
+            workspaceId: 'T_DEMO',
+            channelId: 'C_ASSIGNED',
+            agentId: 'agent_scoped',
+            enabled: true,
+          },
+        ],
+      },
+    },
+    async run(instance) {
+      // Bot joins a channel with no assignment (and no wildcard) — no disclosure.
+      await instance.postEvent(
+        memberJoinedChannel({
+          event_id: 'Ev_JOIN_UNASSIGNED',
+          event: { user: 'U_BOT', channel: 'C_UNASSIGNED', event_ts: '1782771500.000100' },
+        }),
+      );
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.callsOfMethod('chat.postMessage').length,
+        0,
+        'no onboarding may be posted into an unassigned channel',
+      );
+
+      // Bot joins the one assigned channel — exactly one onboarding disclosure.
+      await instance.postEvent(
+        memberJoinedChannel({
+          event_id: 'Ev_JOIN_ASSIGNED',
+          event: { user: 'U_BOT', channel: 'C_ASSIGNED', event_ts: '1782771501.000100' },
+        }),
+      );
+      await waitForPostMessageCount(instance, 1);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
+    },
+  },
 ];
 
 async function waitForFinalCount(

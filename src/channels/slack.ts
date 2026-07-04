@@ -82,10 +82,13 @@ async function resolveBotUserId(): Promise<string | undefined> {
   if (botUserIdResolved) {
     return botUserId;
   }
-  botUserIdResolved = true;
   try {
     const auth = await getClient().auth.test();
     botUserId = typeof auth.user_id === 'string' ? auth.user_id : undefined;
+    // Latch only on a successful call: a definitive answer (including "no
+    // user_id") is cached, but a transient auth.test failure must not pin
+    // botUserId=undefined for the process lifetime — the next event retries.
+    botUserIdResolved = true;
   } catch {
     botUserId = undefined;
   }
@@ -234,7 +237,7 @@ async function runTurn(
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
     agentId: assignment.agent.id,
-    modelLabel: resolvedModel ?? 'unresolved model',
+    modelLabel: resolvedModel,
     publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
@@ -300,6 +303,21 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
     return;
   }
 
+  // Fail-closed, exactly like every turn: only greet in a channel that has an
+  // enabled assignment. Without this, an operator who removes the demo wildcard
+  // would still get an unsolicited onboarding message posted into a channel the
+  // bot was never configured for.
+  const workspaceId = payload.team_id ?? event.team;
+  if (!workspaceId) {
+    return;
+  }
+  try {
+    const store = getConfigStore();
+    resolveAssignment(workspaceId, event.channel, { agents: store, assignments: store });
+  } catch {
+    return;
+  }
+
   const state = getStateStore();
   const evtKey = `evt:${payload.event_id}`;
   if (!state.claim(evtKey)) {
@@ -316,8 +334,10 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
       }),
     });
   } catch (err) {
-    state.release(evtKey);
-    throw err;
+    // Best-effort courtesy: log and KEEP the claim so a Slack retry cannot
+    // double-post the disclosure. Never rethrow — the events route turns a
+    // throw into a 500, which is exactly what makes Slack redeliver the event.
+    console.error('[slack-flue] channel onboarding post failed:', sanitizeError(err));
   }
 }
 
