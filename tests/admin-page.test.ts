@@ -186,12 +186,14 @@ function runAdminPageHarness(): {
   };
 }
 
-test('admin page renders channel labels, channel ID secondary text, and singular channel counts', async () => {
+test('admin page renders channel labels, profile secondary text, and singular channel counts', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /<span class="chan-name">#eng-releases<\/span>/);
-  assert.match(harness.app.innerHTML, /<span class="chan-meta mono">C0EXR3L9T<\/span>/);
+  // Rail secondary text is the attached profile's name (per the design mockups);
+  // the channel ID secondary lives on the modal Channels tab rows instead.
+  assert.match(harness.app.innerHTML, /<span class="chan-meta">Release Profile<\/span>/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   assert.match(harness.app.innerHTML, /used in 1 channel/);
 

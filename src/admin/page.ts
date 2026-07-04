@@ -561,9 +561,10 @@ details[open].advanced summary::before { content: "▾"; }
     } else {
       channels.forEach(function (assignment) {
         var active = state.active && state.active.workspaceId === assignment.workspaceId && state.active.channelId === assignment.channelId;
+        var railAgent = agentById(assignment.agentId);
         html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="select-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">' +
           '<span class="chan-name">' + esc(channelLabel(assignment)) + '</span>' +
-          '<span class="chan-meta mono">' + esc(assignment.channelId) + '</span></button>';
+          '<span class="chan-meta">' + esc(railAgent ? railAgent.name : assignment.agentId) + '</span></button>';
       });
     }
     html += '<button type="button" class="rail-add" data-action="toggle-add-channel">+ Add channel</button>';
