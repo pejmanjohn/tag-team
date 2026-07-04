@@ -13,12 +13,17 @@ import {
   type SlackThreadRegistry,
 } from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
+import { buildSlackAdminUrl } from '../slack/message-format.ts';
 import type { SlackStatusUpdate } from '../slack/replies.ts';
 import { registerSlackStatusTurn } from '../slack/status-registry.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
 import type { SlackTurnContext } from '../slack/thread-context.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
-import type { NormalizedSlackTurn, SlackEventFixture } from '../slack/types.ts';
+import {
+  isSlackMemberJoinedChannelEvent,
+  type NormalizedSlackTurn,
+  type SlackEventFixture,
+} from '../slack/types.ts';
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
@@ -99,6 +104,10 @@ export const channel = createSlackChannel({
       eventType === 'assistant_thread_started' ||
       eventType === 'assistant_thread_context_changed'
     ) {
+      return;
+    }
+    if (eventType === 'member_joined_channel') {
+      await handleMemberJoinedChannel(payload as unknown as SlackEventFixture);
       return;
     }
 
@@ -219,10 +228,14 @@ async function runTurn(
   selfBaseUrl: string,
 ): Promise<void> {
   const client = getClient();
+  const resolvedModel = tryResolveAgentModel(assignment.agent);
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
+    agentId: assignment.agent.id,
+    modelLabel: resolvedModel ?? 'unresolved model',
+    publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
@@ -253,7 +266,6 @@ async function runTurn(
     // durable agent's own resolution fail, so promptAgent's catch below still
     // delivers the sanitized provider-failure final (not silence + a Slack
     // retry loop from the claims being released on an uncaught throw).
-    const resolvedModel = tryResolveAgentModel(assignment.agent);
     if (resolvedModel) {
       await statusTurn.setStatus(modelStatus(resolvedModel));
     }
@@ -275,6 +287,45 @@ async function runTurn(
     statusTurn.close();
     await presenter.clearStatus();
   }
+}
+
+async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<void> {
+  const event = payload.event;
+  if (!isSlackMemberJoinedChannelEvent(event)) {
+    return;
+  }
+
+  const resolvedBotUserId = await resolveBotUserId();
+  if (!resolvedBotUserId || event.user !== resolvedBotUserId) {
+    return;
+  }
+
+  const state = getStateStore();
+  const evtKey = `evt:${payload.event_id}`;
+  if (!state.claim(evtKey)) {
+    return;
+  }
+
+  try {
+    await getClient().chat.postMessage({
+      channel: event.channel,
+      text: channelOnboardingText(resolvedBotUserId, event.channel),
+    });
+  } catch (err) {
+    state.release(evtKey);
+    throw err;
+  }
+}
+
+function channelOnboardingText(botUserId: string, channelId: string): string {
+  const adminUrl = buildSlackAdminUrl(process.env.SLACK_FLUE_PUBLIC_URL, { channelId });
+  const configure = adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
+  return [
+    `Mention <@${botUserId}> to start a thread.`,
+    'Flue Assistant reads the thread and bounded recent context only when asked.',
+    'There is no passive monitoring.',
+    `${configure} this channel's profile in /admin.`,
+  ].join(' ');
 }
 
 function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {

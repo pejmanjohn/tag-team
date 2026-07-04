@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
 import { resolveAssignment } from '../src/config/resolver.ts';
+import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 import { getConfigStore, SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
@@ -107,6 +108,47 @@ test('SqliteConfigStore seeds an empty file database exactly once', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('default seed ships the two demo profiles and their channel assignments', () => {
+  const store = new SqliteConfigStore(':memory:');
+
+  const agents = store.listAgents();
+  assert.equal(agents.length, 2);
+  assert.deepEqual(
+    agents.map((item) => item.name).sort(),
+    ['Exec Brief', 'Release Scribe'],
+  );
+
+  const releaseScribe = agents.find((item) => item.name === 'Release Scribe');
+  assert.ok(releaseScribe);
+  assert.match(releaseScribe.instructions, /summary table/i);
+  assert.match(releaseScribe.instructions, /fenced code/i);
+
+  const execBrief = agents.find((item) => item.name === 'Exec Brief');
+  assert.ok(execBrief);
+  assert.match(execBrief.instructions, /bold-led bullets/i);
+  assert.match(execBrief.instructions, /no code/i);
+
+  assert.deepEqual(store.find('T_DEMO', 'C_ENG'), {
+    workspaceId: 'T_DEMO',
+    channelId: 'C_ENG',
+    agentId: releaseScribe.id,
+    enabled: true,
+    channelLabel: 'eng-releases',
+  });
+  assert.deepEqual(store.find('T_DEMO', 'C_EXEC'), {
+    workspaceId: 'T_DEMO',
+    channelId: 'C_EXEC',
+    agentId: execBrief.id,
+    enabled: true,
+    channelLabel: 'exec-briefing',
+  });
+  assert.equal(store.find('T_OTHER', 'C_OTHER')?.agentId, execBrief.id);
+
+  assert.equal(seededAgents.length, 2);
+  assert.equal(seededAssignments.length, 3);
+  store.close();
 });
 
 test('SqliteConfigStore survives restart on a file database', () => {

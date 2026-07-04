@@ -7,6 +7,7 @@ import {
   assistantThreadStarted,
   channelThreadMessage,
   dmMessage,
+  memberJoinedChannel,
   topLevelChannelMessage,
 } from '../helpers/slack-fixtures.ts';
 import {
@@ -18,6 +19,7 @@ import {
 import type { ParityException } from './exceptions.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
 import { PROVIDER_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
+import { slackFallbackTextLimit } from '../../src/slack/message-format.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 
 /** The exec channel / root thread the default fixtures target. */
@@ -780,7 +782,237 @@ export const scenarios: Scenario[] = [
       assert.equal(final.text, PROVIDER_FAILURE_TEXT);
     },
   },
+  {
+    id: 'S29',
+    title: 'seeded demo channels feed distinct profile instructions to the provider',
+    config: {},
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_DEMO_RELEASE_SCRIBE',
+          event: {
+            channel: 'C_ENG',
+            text: '<@U_BOT> draft the release note for the latency fix',
+            ts: '1782771200.000100',
+            event_ts: '1782771200.000100',
+          },
+        }),
+      );
+      await waitForFinalCount(instance, 1);
+      const releasePrompt = JSON.stringify(instance.backend.providerCalls().at(-1)?.body ?? {});
+      assert.match(releasePrompt, /Release Scribe/);
+      assert.match(releasePrompt, /summary table/i);
+      assert.match(releasePrompt, /fenced code\/diff snippet/i);
+
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_DEMO_EXEC_BRIEF',
+          event: {
+            channel: EXEC_CHANNEL,
+            text: '<@U_BOT> brief leadership on the launch plan',
+            ts: '1782771201.000100',
+            event_ts: '1782771201.000100',
+          },
+        }),
+      );
+      await waitForFinalCount(instance, 2);
+      const execPrompt = JSON.stringify(instance.backend.providerCalls().at(-1)?.body ?? {});
+      assert.match(execPrompt, /Exec Brief/);
+      assert.match(execPrompt, /bold-led bullets/i);
+      assert.match(execPrompt, /Next steps/);
+      assert.doesNotMatch(execPrompt, /fenced code\/diff snippet/i);
+    },
+  },
+  {
+    id: 'S30',
+    title: 'reply footer appears on streamed fallback and provider-failure finals',
+    config: {
+      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_FOOTER_STREAM',
+          event: {
+            text: '<@U_BOT> answer with a streamed footer',
+            ts: '1782771300.000100',
+            event_ts: '1782771300.000100',
+          },
+        }),
+      );
+      await waitForFinalCount(instance, 1);
+      const streamedStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
+      assert.ok(streamedStop);
+      assertFooterBlock(streamedStop.body.blocks, {
+        profileName: 'Exec Brief',
+        modelLabel: 'local-stub/parity-stub-1',
+        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+      });
+
+      instance.backend.configure({ slack: { rejectStartStream: true } });
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_FOOTER_FALLBACK',
+          event: {
+            text: '<@U_BOT> answer through postMessage fallback',
+            ts: '1782771301.000100',
+            event_ts: '1782771301.000100',
+          },
+        }),
+      );
+      await waitForFinalCount(instance, 2);
+      const fallbackPost = instance.backend.callsOfMethod('chat.postMessage').at(-1);
+      assert.ok(fallbackPost);
+      assertFooterBlock(fallbackPost.body.blocks, {
+        profileName: 'Exec Brief',
+        modelLabel: 'local-stub/parity-stub-1',
+        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+      });
+      assert.ok(String(fallbackPost.body.text ?? '').length <= slackFallbackTextLimit);
+
+      instance.backend.configure({
+        provider: { mode: 'http_500' },
+        slack: { rejectStartStream: false },
+      });
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_FOOTER_PROVIDER_FAILURE',
+          event: {
+            text: '<@U_BOT> trigger provider failure with a footer',
+            ts: '1782771302.000100',
+            event_ts: '1782771302.000100',
+          },
+        }),
+      );
+      await waitForFinalCount(instance, 3, 65_000);
+      const failureStop = instance.backend.callsOfMethod('chat.stopStream').at(-1);
+      assert.ok(failureStop);
+      assertFooterBlock(failureStop.body.blocks, {
+        profileName: 'Exec Brief',
+        modelLabel: 'local-stub/parity-stub-1',
+        configureUrl: 'https://demo.example/admin?agent=agent_exec_brief',
+      });
+      assert.equal(instance.backend.finals().at(-1)?.text, PROVIDER_FAILURE_TEXT);
+    },
+  },
+  {
+    id: 'S31',
+    title: 'bot channel join posts onboarding once and ignores non-bot joins',
+    config: {
+      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+    },
+    async run(instance) {
+      const botJoin = memberJoinedChannel({
+        event_id: 'Ev_BOT_JOINED_CHANNEL',
+        event: {
+          user: 'U_BOT',
+          channel: 'C_ENG',
+          event_ts: '1782771400.000100',
+        },
+      });
+
+      const first = await instance.postEvent(botJoin);
+      assert.equal(first.status, 200);
+      await waitForPostMessageCount(instance, 1);
+
+      const posts = instance.backend.callsOfMethod('chat.postMessage');
+      assert.equal(posts.length, 1);
+      const onboarding = posts[0];
+      assert.ok(onboarding);
+      assert.equal(onboarding.body.channel, 'C_ENG');
+      assert.equal(onboarding.body.thread_ts, undefined);
+      const text = String(onboarding.body.text ?? '');
+      assert.match(text, /<@U_BOT>/);
+      assert.match(text, /thread and bounded recent context only when asked/i);
+      assert.match(text, /no passive monitoring/i);
+      assert.match(text, /https:\/\/demo\.example\/admin\?channel=C_ENG/);
+
+      const duplicate = await instance.postEvent(botJoin);
+      assert.equal(duplicate.status, 200);
+      await instance.quiesce();
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
+
+      instance.backend.reset();
+      const nonBot = await instance.postEvent(
+        memberJoinedChannel({
+          event_id: 'Ev_HUMAN_JOINED_CHANNEL',
+          event: {
+            user: 'U_ALICE',
+            channel: 'C_ENG',
+            event_ts: '1782771401.000100',
+          },
+        }),
+      );
+      assert.equal(nonBot.status, 200);
+      await instance.quiesce();
+      assert.equal(instance.backend.wireLog.length, 0);
+    },
+  },
 ];
+
+async function waitForFinalCount(
+  instance: LaneInstance,
+  expected: number,
+  capMs = 20_000,
+): Promise<void> {
+  await waitForWireCondition(
+    () => instance.backend.finals().length >= expected,
+    `expected at least ${expected} finals`,
+    capMs,
+  );
+}
+
+async function waitForPostMessageCount(
+  instance: LaneInstance,
+  expected: number,
+  capMs = 20_000,
+): Promise<void> {
+  await waitForWireCondition(
+    () => instance.backend.callsOfMethod('chat.postMessage').length >= expected,
+    `expected at least ${expected} chat.postMessage calls`,
+    capMs,
+  );
+}
+
+async function waitForWireCondition(
+  predicate: () => boolean,
+  description: string,
+  capMs: number,
+): Promise<void> {
+  const deadline = Date.now() + capMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(description);
+}
+
+function assertFooterBlock(
+  blocks: unknown,
+  expected: { profileName: string; modelLabel: string; configureUrl: string },
+): void {
+  assert.ok(Array.isArray(blocks), 'expected Slack blocks on the final delivery');
+  const footerText = blocks
+    .flatMap((block) =>
+      block && typeof block === 'object' && (block as { type?: unknown }).type === 'context'
+        ? ((block as { elements?: unknown[] }).elements ?? [])
+        : [],
+    )
+    .map((element) =>
+      element && typeof element === 'object' ? String((element as { text?: unknown }).text ?? '') : '',
+    )
+    .join('\n');
+
+  assert.match(footerText, new RegExp(escapeRegExp(expected.profileName)));
+  assert.match(footerText, new RegExp(escapeRegExp(expected.modelLabel)));
+  assert.match(footerText, new RegExp(`<${escapeRegExp(expected.configureUrl)}\\|Configure>`));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Register the scenario suite as `node:test` tests for a lane.

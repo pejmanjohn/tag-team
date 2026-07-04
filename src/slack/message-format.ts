@@ -8,12 +8,34 @@ export interface SlackMarkdownBlock {
   text: string;
 }
 
-export type SlackMessageBlock = SlackMarkdownBlock;
+export interface SlackMrkdwnTextElement {
+  type: 'mrkdwn';
+  text: string;
+}
+
+export interface SlackContextBlock {
+  type: 'context';
+  elements: SlackMrkdwnTextElement[];
+}
+
+export type SlackMessageBlock = SlackMarkdownBlock | SlackContextBlock;
 
 export interface RenderedSlackMessage {
   text: string;
   blocks?: SlackMessageBlock[];
   mrkdwn?: boolean;
+}
+
+export interface SlackAdminUrlParams {
+  agentId?: string;
+  channelId?: string;
+}
+
+export interface SlackReplyFooter {
+  profileName: string;
+  modelLabel: string;
+  agentId: string;
+  publicUrl?: string | undefined;
 }
 
 export function renderSlackMessage(text: string, format: SlackReplyFormat): RenderedSlackMessage {
@@ -41,6 +63,64 @@ export function renderSlackMessage(text: string, format: SlackReplyFormat): Rend
   return {
     text: truncateText(normalized, slackFallbackTextLimit),
   };
+}
+
+export function appendSlackReplyFooter(
+  rendered: RenderedSlackMessage,
+  footer: SlackReplyFooter,
+): RenderedSlackMessage {
+  const contentBlocks =
+    rendered.blocks && rendered.blocks.length > 0
+      ? rendered.blocks
+      : [{ type: 'markdown' as const, text: truncateText(rendered.text, slackMarkdownBlockTextLimit) }];
+
+  return {
+    text: rendered.text,
+    blocks: [...contentBlocks, renderSlackReplyFooterBlock(footer)],
+  };
+}
+
+export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackContextBlock {
+  const adminUrl = buildSlackAdminUrl(footer.publicUrl, { agentId: footer.agentId });
+  const configure = adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
+  return {
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: [
+          escapeSlackControlCharacters(footer.profileName),
+          escapeSlackControlCharacters(footer.modelLabel),
+          configure,
+        ].join(' | '),
+      },
+    ],
+  };
+}
+
+export function buildSlackAdminUrl(
+  publicUrl: string | undefined,
+  params: SlackAdminUrlParams = {},
+): string | undefined {
+  const trimmed = publicUrl?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  let url: URL;
+  try {
+    url = new URL('/admin', trimmed.endsWith('/') ? trimmed : `${trimmed}/`);
+  } catch {
+    return undefined;
+  }
+
+  if (params.agentId) {
+    url.searchParams.set('agent', params.agentId);
+  }
+  if (params.channelId) {
+    url.searchParams.set('channel', params.channelId);
+  }
+  return url.toString();
 }
 
 export function markdownFallbackText(markdown: string): string {

@@ -15,6 +15,9 @@ export type AppMentionFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event
 export type MessageFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
   event?: Partial<SlackMessageEvent>;
 };
+export type MemberJoinedFixtureOverrides = Omit<Partial<SlackEventFixture>, 'event'> & {
+  event?: Record<string, unknown>;
+};
 
 type MessageFixtureFile =
   | 'message-channel-thread-reply.json'
@@ -56,6 +59,27 @@ export function appHomeMessage(overrides: MessageFixtureOverrides = {}): Message
 
 export function assistantThreadStarted(): SlackEventFixture {
   return slackFixture<SlackEventFixture>('assistant-thread-started.json');
+}
+
+export function memberJoinedChannel(overrides: MemberJoinedFixtureOverrides = {}): SlackEventFixture {
+  return {
+    token: 'verification-token-not-a-secret',
+    team_id: 'T_DEMO',
+    api_app_id: 'A_DEMO',
+    event_id: 'Ev_MEMBER_JOINED_CHANNEL',
+    event_time: 1782771200,
+    type: 'event_callback',
+    ...overrides,
+    event: {
+      type: 'member_joined_channel',
+      user: 'U_BOT',
+      channel: 'C_ENG',
+      channel_type: 'C',
+      team: 'T_DEMO',
+      event_ts: '1782771200.000100',
+      ...overrides.event,
+    },
+  } as unknown as SlackEventFixture;
 }
 
 function messageFixture(

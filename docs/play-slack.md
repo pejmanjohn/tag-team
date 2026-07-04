@@ -68,6 +68,7 @@ export SLACK_SIGNING_SECRET="..."
 export SLACK_BOT_TOKEN="<bot-token>"
 export SLACK_BOT_USER_ID="U..." # optional; resolved via Slack auth.test if omitted
 export FLUE_ADMIN_TOKEN="<long-random-admin-token>" # optional; enables /admin/api/*
+export SLACK_FLUE_PUBLIC_URL="https://<your-tunnel-host>" # optional; enables Slack Configure links
 # Default provider: the seeded Cloudflare Workers AI model.
 export CLOUDFLARE_ACCOUNT_ID="..."
 export CLOUDFLARE_API_TOKEN="..."
@@ -109,10 +110,11 @@ Subscribe to bot event:
 - `message.channels`
 - `message.im`
 - `message.app_home`
+- `member_joined_channel`
 - `assistant_thread_started`
 - `assistant_thread_context_changed`
 
-The new `message.channels`, `message.im`, and `message.app_home` subscriptions require reinstalling the app after the scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state. Adding `users:read` for identity verification also requires reinstalling the app.
+The new `message.channels`, `message.im`, `message.app_home`, and `member_joined_channel` subscriptions require reinstalling the app after the events/scopes are added. Reinstall or reload Slack if the App Home Messages tab changes after the initial install. Pause for operator confirmation before changing live Slack app scopes, App Home DM settings, event subscriptions, or reinstall state. Adding `users:read` for identity verification also requires reinstalling the app.
 
 `SLACK_BOT_USER_ID` is required before generic `message.*` events are admitted. If it is not configured, the Slack channel resolves it once on the first event via Slack `auth.test`. If that lookup fails, it falls closed: message events are still acknowledged, but runnable thread/DM turns are ignored with `missing_bot_user_id` so an app-authored Slack message cannot start a reply loop.
 
@@ -127,11 +129,13 @@ Invite the bot to a channel, then mention it:
 Expected behavior:
 
 - immediate Assistant status such as `Slack Flue Demo is checking context` where Slack renders Assistant status for the surface;
+- one non-threaded channel onboarding message when the bot itself is invited, explaining that users mention the bot to start a thread, it reads the thread and bounded recent context only when asked, and there is no passive monitoring;
 - transient safe loading/status text during approved tool work, such as channel-context gathering;
 - no permanent progress lines such as `Gathering channel context` should remain in the thread after the final answer;
-- streamed final reply from `Exec Research` when Slack accepts the streaming APIs;
+- streamed final reply from the assigned profile when Slack accepts the streaming APIs;
 - fallback final threaded reply when status or streaming is unavailable;
 - fallback final replies use Slack `markdown` blocks, so standard Markdown like `**bold**`, links, lists, blockquotes, tables, and fenced code should render instead of appearing literally;
+- every final reply carries a footer with the profile name, resolved model label, and a `Configure` link when `SLACK_FLUE_PUBLIC_URL` is set;
 - duplicate Slack retries are acknowledged without duplicate posts.
 
 Response defaults in this slice:
@@ -161,7 +165,14 @@ The checked-in seed data is for local demo playtesting:
 - app name: `Slack Flue Demo`;
 - provider: `workers-ai`;
 - Workers AI model: `@cf/zai-org/glm-5.2`;
-- fallback assignment: `*/* -> agent_exec_research`.
+- engineering demo assignment: `T_DEMO/C_ENG -> agent_release_scribe` (`Release Scribe`), which leads with a summary table and includes a fenced code/diff snippet;
+- executive demo assignment: `T_DEMO/C_EXEC -> agent_exec_brief` (`Exec Brief`), which uses bold-led bullets, closes with `Next steps`, and avoids code;
+- fallback assignment: `*/* -> agent_exec_brief`.
+
+Set `SLACK_FLUE_PUBLIC_URL` to the same public base URL Slack can reach for this
+server. Reply footers link to `/admin?agent=<id>` and channel onboarding links to
+`/admin?channel=<channel-id>`; when it is unset, Slack shows `Configure` as a
+plain label.
 
 Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<FLUE_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Replace or delete the catch-all assignment before testing anything beyond a private demo workspace.
 

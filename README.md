@@ -4,13 +4,15 @@ A Slack bot built on the [Flue](https://www.npmjs.com/package/@flue/runtime) age
 runtime. It answers `@`-mentions, threaded replies, and DMs in Slack: it verifies
 the request signature, normalizes the event into a runnable turn, hydrates bounded
 channel/thread context, and drives a durable Flue agent that streams a final reply
-back into the thread. Per-channel assignments map a workspace + channel to a custom
-agent (instructions, model, allowed tools); an assignment-scoped `lookup_channel_brief`
-tool is exposed to agents that opt in.
+back into the thread. Per-channel assignments map a workspace + channel to a named
+profile (instructions, model, allowed tools); an assignment-scoped
+`lookup_channel_brief` tool is exposed to profiles that opt in. The Slack-visible
+identity is still one install-wide bot; profile names appear in reply footers so
+users can see which profile answered.
 
 The product runs entirely on the **Flue lane**. The earlier hand-rolled harness has
 been deleted; the behavior it encoded is preserved by a lane-agnostic parity suite
-(`tests/parity/`) that now runs against the real Flue app (Lane B, 25 scenarios).
+(`tests/parity/`) that now runs against the real Flue app (Lane B, 31 scenarios).
 
 ## Architecture
 
@@ -66,6 +68,7 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `SLACK_BOT_TOKEN` | yes | Bot token for outbound Slack Web API calls. |
 | `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
+| `SLACK_FLUE_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
 | `SLACK_FLUE_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
 | `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
 | `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
@@ -77,6 +80,18 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
 
 `.env.example` lists the offline-safe defaults.
+
+Seeded demo profiles:
+
+- `Release Scribe` (`agent_release_scribe`) is assigned to `T_DEMO/C_ENG`; it leads with a summary table and includes a fenced code/diff snippet for engineering demos.
+- `Exec Brief` (`agent_exec_brief`) is assigned to `T_DEMO/C_EXEC` and the wildcard fallback; it uses bold-led bullets, closes with `Next steps`, and avoids code.
+
+Every final Slack reply includes a footer with the profile name, resolved model
+label, and a Configure link to `/admin?agent=<id>` when `SLACK_FLUE_PUBLIC_URL`
+is set. When the bot itself is invited to a channel, it posts one non-threaded
+onboarding message explaining that users should mention the bot to start a
+thread, that it reads the thread and bounded recent context only when asked, and
+that there is no passive monitoring.
 
 Model selection is per agent:
 
@@ -98,10 +113,11 @@ apply to new Slack thread agent initializations without restarting the server.
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The suite is 67 tests: the 25 parity scenarios on the Flue lane (Lane B), the
+The suite includes the 31 parity scenarios on the Flue lane (Lane B), the
 admin/config-store checks, identity checks, fake-Slack smoke tests, Slack
 formatting, the agent model resolver, and the turn-normalization/history-window
-unit tests.
+unit tests. Set `FLUE_REQUIRE_LOOPBACK=1` when parity must be proven, so a
+loopback-denied environment fails instead of silently skipping Lane B.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`):
 

@@ -39,6 +39,7 @@
         "app_mention",
         "assistant_thread_context_changed",
         "assistant_thread_started",
+        "member_joined_channel",
         "message.app_home",
         "message.channels",
         "message.im"

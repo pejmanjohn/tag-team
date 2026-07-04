@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  buildSlackAdminUrl,
+  renderSlackReplyFooterBlock,
   markdownFallbackText,
   renderSlackMessage,
   slackMarkdownBlockTextLimit,
@@ -69,6 +71,41 @@ test('fallback text is plain enough for notifications and accessibility', () => 
   const fallback = markdownFallbackText('## Hello <team>\n\n**Ship** [docs](https://example.com)');
 
   assert.equal(fallback, 'Hello &lt;team&gt;\n\nShip docs (https://example.com)');
+});
+
+test('reply footers render profile, model, and optional configure link', () => {
+  assert.equal(
+    buildSlackAdminUrl('https://demo.example', { agentId: 'agent_exec_brief' }),
+    'https://demo.example/admin?agent=agent_exec_brief',
+  );
+
+  const linked = renderSlackReplyFooterBlock({
+    profileName: 'Exec <Brief>',
+    modelLabel: 'local-stub/parity-stub-1',
+    agentId: 'agent_exec_brief',
+    publicUrl: 'https://demo.example/flue',
+  });
+  assert.deepEqual(linked, {
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: 'Exec &lt;Brief&gt; | local-stub/parity-stub-1 | <https://demo.example/admin?agent=agent_exec_brief|Configure>',
+      },
+    ],
+  });
+
+  const unlinked = renderSlackReplyFooterBlock({
+    profileName: 'Release Scribe',
+    modelLabel: 'local-stub/parity-stub-1',
+    agentId: 'agent_release_scribe',
+  });
+  assert.deepEqual(unlinked.elements, [
+    {
+      type: 'mrkdwn',
+      text: 'Release Scribe | local-stub/parity-stub-1 | Configure',
+    },
+  ]);
 });
 
 test('reply sinks default final replies to markdown and progress replies to plain text', () => {

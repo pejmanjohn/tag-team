@@ -10,11 +10,35 @@ export const SEED_DEFAULT_MODELS = {
 
 export const seededAgents: CustomAgentConfig[] = [
   {
-    id: 'agent_exec_research',
-    name: 'Exec Research',
-    description: 'Answers executive-channel questions with concise workspace context.',
+    id: 'agent_release_scribe',
+    name: 'Release Scribe',
+    description: 'Engineering release profile for launch notes and incident-quality detail.',
     instructions:
-      'Use only the configured Slack thread and approved tools. Reply with concise findings and next steps.',
+      [
+        'You are Release Scribe, the engineering release profile for this Slack channel.',
+        'Use only the configured Slack thread, bounded recent context, and approved tools.',
+        'Write visibly markdown-rich engineering replies.',
+        'Always lead with a summary table.',
+        'Include a fenced code/diff snippet that makes the concrete change easy to inspect.',
+        'Call out risks, owners, and verification evidence without inventing facts.',
+      ].join(' '),
+    enabled: true,
+    defaultModels: { ...SEED_DEFAULT_MODELS },
+    allowedTools: ['lookup_channel_brief'],
+  },
+  {
+    id: 'agent_exec_brief',
+    name: 'Exec Brief',
+    description: 'Executive profile for concise launch and business updates.',
+    instructions:
+      [
+        'You are Exec Brief, the executive briefing profile for this Slack channel.',
+        'Use only the configured Slack thread, bounded recent context, and approved tools.',
+        'Write with bold-led bullets for fast scanning.',
+        'Close every answer with a numbered "Next steps" list.',
+        'Use business impact, decisions, and owner language.',
+        'Use no code, code fences, diffs, or implementation snippets.',
+      ].join(' '),
     enabled: true,
     defaultModels: { ...SEED_DEFAULT_MODELS },
     allowedTools: ['lookup_channel_brief'],
@@ -24,19 +48,29 @@ export const seededAgents: CustomAgentConfig[] = [
 export const seededAssignments: ChannelAssignment[] = [
   {
     workspaceId: 'T_DEMO',
-    channelId: 'C_EXEC',
-    agentId: 'agent_exec_research',
+    channelId: 'C_ENG',
+    agentId: 'agent_release_scribe',
     enabled: true,
+    channelLabel: 'eng-releases',
+  },
+  {
+    workspaceId: 'T_DEMO',
+    channelId: 'C_EXEC',
+    agentId: 'agent_exec_brief',
+    enabled: true,
+    channelLabel: 'exec-briefing',
   },
   {
     workspaceId: '*',
     channelId: '*',
-    agentId: 'agent_exec_research',
+    agentId: 'agent_exec_brief',
     enabled: true,
   },
 ];
 
 export const seededChannelBriefs: Record<string, string> = {
+  C_ENG:
+    'The engineering release channel tracks shipped fixes, launch risks, owners, and verification evidence.',
   C_EXEC:
     'The exec leadership channel tracks board prep, paid acquisition, and weekly customer-proof priorities.',
 };

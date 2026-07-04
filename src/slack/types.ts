@@ -50,11 +50,22 @@ export interface SlackAssistantThreadContextChangedEvent {
   user?: string;
 }
 
+export interface SlackMemberJoinedChannelEvent {
+  type: 'member_joined_channel';
+  user: string;
+  channel: string;
+  channel_type?: string;
+  team?: string;
+  inviter?: string;
+  event_ts: string;
+}
+
 export type SlackEvent =
   | SlackAppMentionEvent
   | SlackMessageEvent
   | SlackAssistantThreadStartedEvent
-  | SlackAssistantThreadContextChangedEvent;
+  | SlackAssistantThreadContextChangedEvent
+  | SlackMemberJoinedChannelEvent;
 
 export interface SlackEventFixture {
   token: string;
@@ -124,4 +135,10 @@ export function isSlackAssistantEvent(
     event.type === 'assistant_thread_started' ||
     event.type === 'assistant_thread_context_changed'
   );
+}
+
+export function isSlackMemberJoinedChannelEvent(
+  event: SlackEvent,
+): event is SlackMemberJoinedChannelEvent {
+  return event.type === 'member_joined_channel';
 }

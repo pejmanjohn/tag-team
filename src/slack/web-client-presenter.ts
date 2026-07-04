@@ -1,6 +1,12 @@
 import type { WebClient } from '@slack/web-api';
 
-import { renderSlackMessage, type SlackReplyFormat } from './message-format.ts';
+import {
+  appendSlackReplyFooter,
+  renderSlackMessage,
+  renderSlackReplyFooterBlock,
+  type SlackReplyFormat,
+  type SlackReplyFooter,
+} from './message-format.ts';
 import {
   slackLoadingMessages,
   slackStatusText,
@@ -21,6 +27,9 @@ export interface SlackPresenterTarget {
   channelId: string;
   threadTs: string;
   agentName: string;
+  agentId: string;
+  modelLabel: string;
+  publicUrl?: string | undefined;
   userId?: string;
   workspaceId?: string;
 }
@@ -106,6 +115,8 @@ export class WebClientPresenter {
    * the fallback post fail, so the caller can release its claim for a retry.
    */
   async deliverFinal(text: string, format: SlackReplyFormat): Promise<void> {
+    const footer = this.replyFooter();
+
     if (this.target.userId && this.target.workspaceId) {
       try {
         const started = await this.client.chat.startStream({
@@ -119,6 +130,7 @@ export class WebClientPresenter {
           await this.client.chat.stopStream({
             channel: this.target.channelId,
             ts: started.ts as string,
+            blocks: [renderSlackReplyFooterBlock(footer)],
           });
         } catch {
           // A stopStream failure must not trigger a duplicate final (S18).
@@ -129,11 +141,20 @@ export class WebClientPresenter {
       }
     }
 
-    const rendered = renderSlackMessage(text, format);
+    const rendered = appendSlackReplyFooter(renderSlackMessage(text, format), footer);
     await this.client.chat.postMessage({
       channel: this.target.channelId,
       thread_ts: this.target.threadTs,
       ...rendered,
     });
+  }
+
+  private replyFooter(): SlackReplyFooter {
+    return {
+      profileName: this.target.agentName,
+      modelLabel: this.target.modelLabel,
+      agentId: this.target.agentId,
+      publicUrl: this.target.publicUrl,
+    };
   }
 }
