@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { resolveStateDbPath } from '../slack/claim-store.ts';
+import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 
@@ -17,6 +18,7 @@ const DEFAULT_SEED: ConfigSeed = {
 };
 
 const SEED_META_KEY = 'config_seeded_v1';
+const SCHEMA_VERSION_KEY = 'schema_version';
 type AgentStatementValues = [
   string,
   string,
@@ -84,7 +86,7 @@ export class SqliteConfigStore {
         PRIMARY KEY (workspace_id, channel_id)
       );`,
     );
-    this.ensureAssignmentChannelLabelColumn();
+    this.runMigrations();
     this.seedOnce(seed);
   }
 
@@ -102,13 +104,21 @@ export class SqliteConfigStore {
   getAgent(agentId: string): CustomAgentConfig {
     const row = this.db.prepare('SELECT * FROM config_agents WHERE id = ?').get(agentId);
     if (!row) {
-      throw new Error(`Unknown agent ${agentId}`);
+      throw new UnknownAgentError(agentId);
     }
     return rowToAgent(row as unknown as AgentRow);
   }
 
   createAgent(agent: CustomAgentConfig): CustomAgentConfig {
-    const inserted = this.agentInsertStatement().run(...agentStatementValues(agent));
+    let inserted;
+    try {
+      inserted = this.agentInsertStatement().run(...agentStatementValues(agent));
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+        throw new AgentExistsError(agent.id);
+      }
+      throw err;
+    }
     if (inserted.changes !== 1) {
       throw new Error(`Agent ${agent.id} was not created`);
     }
@@ -150,7 +160,7 @@ export class SqliteConfigStore {
       const keys = references
         .map((assignment) => `${assignment.workspaceId}/${assignment.channelId}`)
         .join(', ');
-      throw new Error(`Agent ${agentId} is still assigned to ${keys}`);
+      throw new AgentStillAssignedError(agentId, keys);
     }
     const deleted = this.db.prepare('DELETE FROM config_agents WHERE id = ?').run(agentId);
     return deleted.changes === 1;
@@ -278,12 +288,40 @@ export class SqliteConfigStore {
     );
   }
 
-  private ensureAssignmentChannelLabelColumn(): void {
-    const columns = this.db
-      .prepare('PRAGMA table_info(config_assignments)')
-      .all() as Array<{ name: string }>;
-    if (!columns.some((column) => column.name === 'channel_label')) {
-      this.db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT;');
+  // Ordered, idempotent migrations for state DBs created before the current
+  // CREATE TABLE schema. The applied version persists in config_meta so future
+  // columns append a numbered step here instead of growing bespoke
+  // ensure-column methods.
+  private runMigrations(): void {
+    const MIGRATIONS: Array<{ version: number; up: (db: DatabaseSync) => void }> = [
+      {
+        version: 1,
+        up: (db) => {
+          const columns = db
+            .prepare('PRAGMA table_info(config_assignments)')
+            .all() as Array<{ name: string }>;
+          if (!columns.some((column) => column.name === 'channel_label')) {
+            db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT;');
+          }
+        },
+      },
+    ];
+    const row = this.db
+      .prepare('SELECT value FROM config_meta WHERE key = ?')
+      .get(SCHEMA_VERSION_KEY) as { value: string } | undefined;
+    const applied = row ? Number(row.value) : 0;
+    for (const migration of MIGRATIONS) {
+      if (migration.version > applied) {
+        migration.up(this.db);
+      }
+    }
+    const latest = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
+    if (latest > applied) {
+      this.db
+        .prepare(
+          'INSERT INTO config_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        )
+        .run(SCHEMA_VERSION_KEY, String(latest));
     }
   }
 }

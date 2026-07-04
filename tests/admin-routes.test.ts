@@ -380,7 +380,7 @@ test('main app mounts admin routes before flue routing', async () => {
   );
 });
 
-test('admin API accepts a free-text model whose provider prefix is not known', async () => {
+test('admin API accepts a free-text model with an unknown provider prefix but warns', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
@@ -392,8 +392,16 @@ test('admin API accepts a free-text model whose provider prefix is not known', a
       body: JSON.stringify(freeTextAgent),
     });
 
+    // Warn, never block: the provider registry approximates the runtime's real
+    // provider surface, so unknown prefixes save fine — with a visible warning
+    // instead of a false all-clear.
     assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), { agent: freeTextAgent });
+    assert.deepEqual(await response.json(), {
+      agent: freeTextAgent,
+      warnings: [
+        { code: 'unknown_provider', provider: 'anthropc', knownProviders: ['local-stub'] },
+      ],
+    });
   } finally {
     store.close();
   }

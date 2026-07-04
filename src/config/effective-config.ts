@@ -26,7 +26,6 @@ export interface EffectiveSlackConfig {
   allowedTools: string[];
   instructions: string;
   instructionLayers: InstructionLayer[];
-  snapshotHash: string;
 }
 
 export function resolveEffectiveSlackConfig(
@@ -71,22 +70,29 @@ export function resolveEffectiveSlackConfig(
     allowedTools,
     instructions,
     instructionLayers,
-    snapshotHash: stableSnapshotHash({
-      workspaceId: assignment.workspaceId,
-      channelId: assignment.channelId,
-      agentId: assignment.agentId,
-      model,
-      allowedTools,
-      instructions,
-    }),
   };
+}
+
+// Deliberately NOT part of resolveEffectiveSlackConfig: the resolver runs on
+// every Slack turn, where the sha256 over multi-KB instructions would be
+// computed and discarded. Only snapshot consumers (the admin Access summary
+// today, thread snapshots later) pay for it.
+export function computeSnapshotHash(config: EffectiveSlackConfig): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        workspaceId: config.workspaceId,
+        channelId: config.channelId,
+        agentId: config.agentId,
+        model: config.model,
+        allowedTools: config.allowedTools,
+        instructions: config.instructions,
+      }),
+    )
+    .digest('hex');
 }
 
 function providerPrefix(model: string): string {
   const slash = model.indexOf('/');
   return slash > 0 ? model.slice(0, slash) : model;
-}
-
-function stableSnapshotHash(input: unknown): string {
-  return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }

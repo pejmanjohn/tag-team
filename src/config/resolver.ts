@@ -1,3 +1,6 @@
+import { parseSlackThreadKey } from '../slack/thread-key.ts';
+
+import { DisabledAgentError, NoAssignmentError, UnknownAgentError } from './errors.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 
@@ -24,7 +27,7 @@ export class AgentStore {
   getAgent(agentId: string): CustomAgentConfig {
     const agent = this.agents.get(agentId);
     if (!agent) {
-      throw new Error(`Unknown agent ${agentId}`);
+      throw new UnknownAgentError(agentId);
     }
     return agent;
   }
@@ -64,12 +67,12 @@ export function resolveAssignment(
 ): ResolvedAssignment {
   const assignment = stores.assignments.find(workspaceId, channelId);
   if (!assignment) {
-    throw new Error(`No enabled agent assignment for ${workspaceId}/${channelId}`);
+    throw new NoAssignmentError(`No enabled agent assignment for ${workspaceId}/${channelId}`);
   }
 
   const agent = stores.agents.getAgent(assignment.agentId);
   if (!agent.enabled) {
-    throw new Error(`Assigned agent ${agent.id} is disabled`);
+    throw new DisabledAgentError(agent.id);
   }
 
   return {
@@ -87,9 +90,6 @@ export function resolveAssignmentFromThreadKey(
   threadKey: string,
   stores: ConfigStores,
 ): ResolvedAssignment {
-  const [workspaceId, channelId] = threadKey.split(':');
-  if (!workspaceId || !channelId) {
-    throw new Error(`Invalid Slack thread key ${threadKey}`);
-  }
+  const { workspaceId, channelId } = parseSlackThreadKey(threadKey);
   return resolveAssignment(workspaceId, channelId, stores);
 }

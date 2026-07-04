@@ -1,3 +1,4 @@
+import { ModelResolutionError } from './errors.ts';
 import type { CustomAgentConfig } from './types.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
@@ -23,7 +24,7 @@ export function resolveAgentModel(
   if (fallbackModel) {
     return fallbackModel;
   }
-  throw new Error(
+  throw new ModelResolutionError(
     `No model configured for agent ${agent.id}. Set agent.model, ANTHROPIC_API_KEY, ` +
       'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or SLACK_FLUE_MODEL.',
   );

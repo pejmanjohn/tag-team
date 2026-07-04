@@ -11,42 +11,35 @@ export function recordRegisteredProvider(id: string): void {
 
 interface ProviderCatalogEntry {
   id: string;
-  label: string;
   envVars: readonly string[];
   suggestions: readonly string[];
 }
 
 export interface RuntimeModelProvider {
   id: string;
-  label: string;
   configured: boolean;
   source: string;
-  envVars: string[];
   suggestions: string[];
 }
 
 const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   {
     id: 'anthropic',
-    label: 'Anthropic',
     envVars: ['ANTHROPIC_API_KEY'],
     suggestions: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-haiku-4-5'],
   },
   {
     id: 'openai',
-    label: 'OpenAI',
     envVars: ['OPENAI_API_KEY'],
     suggestions: ['openai/gpt-4.1', 'openai/gpt-4.1-mini'],
   },
   {
     id: 'openrouter',
-    label: 'OpenRouter',
     envVars: ['OPENROUTER_API_KEY'],
     suggestions: ['openrouter/anthropic/claude-sonnet-4', 'openrouter/openai/gpt-4.1'],
   },
   {
     id: 'cloudflare-workers-ai',
-    label: 'Cloudflare Workers AI',
     envVars: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'],
     suggestions: ['cloudflare-workers-ai/@cf/zai-org/glm-5.2'],
   },
@@ -79,14 +72,12 @@ export function listRuntimeModelProviders({
         entry.envVars.length > 0 && entry.envVars.every((envVar) => Boolean(env[envVar]));
       return {
         id,
-        label: entry.label,
         configured: registered || envConfigured,
         source: registered
           ? 'registered in src/app.ts'
           : entry.envVars.length > 0
             ? `via ${entry.envVars.join(' + ')}`
             : 'custom provider',
-        envVars: [...entry.envVars],
         suggestions: [...entry.suggestions],
       };
     });
@@ -95,7 +86,6 @@ export function listRuntimeModelProviders({
 function customProviderEntry(id: string): ProviderCatalogEntry {
   return {
     id,
-    label: id,
     envVars: [],
     suggestions: [`${id}/admin-agent`],
   };

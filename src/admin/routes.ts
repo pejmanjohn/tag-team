@@ -1,10 +1,22 @@
 import { Hono, type Context, type Next } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
 import { renderAdminPage } from './page.ts';
-import { resolveEffectiveSlackConfig, type EffectiveSlackConfig } from '../config/effective-config.ts';
+import {
+  computeSnapshotHash,
+  resolveEffectiveSlackConfig,
+  type EffectiveSlackConfig,
+} from '../config/effective-config.ts';
+import {
+  AgentExistsError,
+  AgentStillAssignedError,
+  ModelResolutionError,
+  NoAssignmentError,
+  UnknownAgentError,
+} from '../config/errors.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
-import { listRuntimeModelProviders } from '../config/providers.ts';
+import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import { getConfigStore, type SqliteConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
@@ -67,6 +79,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
       : listRuntimeModelProviders();
+  const providerIds = () => options.knownProviders ?? knownProviderIds();
 
   const adminGate = async (c: Context, next: Next) => {
     const expected = adminToken();
@@ -76,11 +89,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const queryToken = c.req.query('token');
     if (constantTimeEquals(queryToken, expected)) {
-      setAdminCookie(c, expected);
+      setCookie(c, ADMIN_COOKIE, expected, { path: '/admin', httpOnly: true, sameSite: 'Lax' });
       return next();
     }
 
-    const candidate = bearerToken(c.req.header('authorization')) ?? cookieToken(c.req.header('cookie'));
+    const candidate = bearerToken(c.req.header('authorization')) ?? getCookie(c, ADMIN_COOKIE);
     if (!constantTimeEquals(candidate, expected)) {
       return c.json({ error: 'unauthorized' }, 401);
     }
@@ -113,9 +126,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     try {
       const configStore = store();
-      return c.json({ agent: configStore.createAgent(agent) }, 201);
+      return c.json(
+        { agent: configStore.createAgent(agent), ...providerWarnings(agent.model, providerIds()) },
+        201,
+      );
     } catch (err) {
-      if (isUniqueConstraintError(err)) {
+      if (err instanceof AgentExistsError) {
         return c.json({ error: 'agent_exists' }, 409);
       }
       return internalError(c, err);
@@ -126,7 +142,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       return c.json({ agent: store().getAgent(c.req.param('id')) });
     } catch (err) {
-      if (isUnknownAgentError(err)) {
+      if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
       return internalError(c, err);
@@ -153,9 +169,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!isModelResolvable(next)) {
         return c.json({ error: 'model_not_resolvable' }, 422);
       }
-      return c.json({ agent: configStore.updateAgent(agentId, patch) });
+      return c.json({
+        agent: configStore.updateAgent(agentId, patch),
+        ...providerWarnings(next.model, providerIds()),
+      });
     } catch (err) {
-      if (isUnknownAgentError(err)) {
+      if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
       return internalError(c, err);
@@ -179,7 +198,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const deleted = configStore.deleteAgent(agentId);
       return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
     } catch (err) {
-      if (isStillAssignedError(err)) {
+      if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
       }
       return internalError(c, err);
@@ -207,7 +226,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       return c.json({ assignment: store().putAssignment(toAssignment(parsed.output)) });
     } catch (err) {
-      if (isUnknownAgentError(err)) {
+      if (err instanceof UnknownAgentError) {
         return c.json({ error: 'unknown_agent' }, 404);
       }
       return internalError(c, err);
@@ -239,10 +258,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ),
       });
     } catch (err) {
-      if (isNoResolvedAssignmentError(err) || isUnknownAgentError(err)) {
+      if (err instanceof NoAssignmentError || err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
       }
-      if (isModelResolutionError(err)) {
+      if (err instanceof ModelResolutionError) {
         return c.json({ error: 'model_not_resolvable' }, 422);
       }
       return internalError(c, err);
@@ -255,24 +274,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 function bearerToken(header: string | undefined): string | undefined {
   const match = header?.match(/^Bearer (.+)$/);
   return match?.[1];
-}
-
-function cookieToken(header: string | undefined): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const [name, ...valueParts] = part.trim().split('=');
-    if (name === ADMIN_COOKIE) {
-      return decodeURIComponent(valueParts.join('='));
-    }
-  }
-  return undefined;
-}
-
-function setAdminCookie(c: Context, token: string): void {
-  c.header(
-    'set-cookie',
-    `${ADMIN_COOKIE}=${encodeURIComponent(token)}; Path=/admin; HttpOnly; SameSite=Lax`,
-  );
 }
 
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentConfig {
@@ -347,28 +348,22 @@ function invalidRequest(c: { json(body: { error: string }, status: 400): Respons
   return c.json({ error: 'invalid_request' }, 400);
 }
 
-function isUnknownAgentError(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith('Unknown agent ');
-}
-
-function isUniqueConstraintError(err: unknown): boolean {
-  return err instanceof Error && err.message.includes('UNIQUE constraint failed');
-}
-
-function isStillAssignedError(err: unknown): boolean {
-  return err instanceof Error && err.message.includes('is still assigned to');
-}
-
-function isNoResolvedAssignmentError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.message.startsWith('No enabled agent assignment for ') ||
-      (err.message.startsWith('Assigned agent ') && err.message.endsWith(' is disabled')))
-  );
-}
-
-function isModelResolutionError(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith('No model configured for agent ');
+// Free text accepts any provider/model specifier (locked model-picker
+// decision: warn, never block — the registry approximates Flue/Pi's real
+// provider surface, so an unknown prefix may still work at runtime). A warning
+// on the success body keeps the pre-check honest without false blocking. An
+// empty registry means "unknown environment" (route module used without
+// src/app.ts registrations, e.g. unit tests) — no warning either way.
+function providerWarnings(
+  model: string | null | undefined,
+  known: ReadonlySet<string>,
+): { warnings?: Array<{ code: string; provider: string; knownProviders: string[] }> } {
+  if (!model || known.size === 0) return {};
+  const prefix = model.slice(0, model.indexOf('/'));
+  if (known.has(prefix)) return {};
+  return {
+    warnings: [{ code: 'unknown_provider', provider: prefix, knownProviders: [...known].sort() }],
+  };
 }
 
 // Never echo internal error text (raw SQLite messages) to API clients; log it
@@ -397,6 +392,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     allowedTools: config.allowedTools,
     instructions: config.instructions,
     instructionLayers: config.instructionLayers,
-    snapshotHash: config.snapshotHash,
+    snapshotHash: computeSnapshotHash(config),
   };
 }
