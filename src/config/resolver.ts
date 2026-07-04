@@ -8,8 +8,30 @@ export interface AgentReader {
   getAgent(agentId: string): CustomAgentConfig;
 }
 
+// A turn's surface. The global '*,*' wildcard assignment is the default for
+// DIRECT conversations only (DMs, App Home) — mirroring Claude Tag, where a DM
+// is a separate surface, not a channel with an access bundle. CHANNELS are
+// fail-closed: they resolve only via an explicit (exact / workspace / channel)
+// assignment and never fall through to the global wildcard.
+export type AssignmentSurface = 'channel' | 'direct';
+
+export interface AssignmentLookupOptions {
+  surface?: AssignmentSurface;
+}
+
+// Slack DM and App Home channel ids are 'D…'; public/private channels are
+// 'C…'/'G…'. Used to infer the surface where only the channel id is known
+// (the durable agent and admin resolve from a thread key, not a live turn).
+export function surfaceForChannelId(channelId: string): AssignmentSurface {
+  return channelId.startsWith('D') ? 'direct' : 'channel';
+}
+
 export interface AssignmentReader {
-  find(workspaceId: string, channelId: string): ChannelAssignment | undefined;
+  find(
+    workspaceId: string,
+    channelId: string,
+    options?: AssignmentLookupOptions,
+  ): ChannelAssignment | undefined;
 }
 
 export interface ConfigStores {
@@ -40,7 +62,12 @@ export class AssignmentStore {
     this.assignments = assignments;
   }
 
-  find(workspaceId: string, channelId: string): ChannelAssignment | undefined {
+  find(
+    workspaceId: string,
+    channelId: string,
+    options: AssignmentLookupOptions = {},
+  ): ChannelAssignment | undefined {
+    const surface = options.surface ?? 'direct';
     const exact = this.assignments.find(
       (assignment) =>
         assignment.workspaceId === workspaceId &&
@@ -55,7 +82,9 @@ export class AssignmentStore {
       (assignment) =>
         assignment.enabled &&
         (assignment.workspaceId === workspaceId || assignment.workspaceId === '*') &&
-        (assignment.channelId === channelId || assignment.channelId === '*'),
+        (assignment.channelId === channelId || assignment.channelId === '*') &&
+        // Channels never fall through to the global wildcard (fail-closed).
+        !(surface === 'channel' && assignment.workspaceId === '*' && assignment.channelId === '*'),
     );
   }
 }
@@ -64,8 +93,9 @@ export function resolveAssignment(
   workspaceId: string,
   channelId: string,
   stores: ConfigStores,
+  options: AssignmentLookupOptions = {},
 ): ResolvedAssignment {
-  const assignment = stores.assignments.find(workspaceId, channelId);
+  const assignment = stores.assignments.find(workspaceId, channelId, options);
   if (!assignment) {
     throw new NoAssignmentError(`No enabled agent assignment for ${workspaceId}/${channelId}`);
   }
@@ -91,5 +121,7 @@ export function resolveAssignmentFromThreadKey(
   stores: ConfigStores,
 ): ResolvedAssignment {
   const { workspaceId, channelId } = parseSlackThreadKey(threadKey);
-  return resolveAssignment(workspaceId, channelId, stores);
+  return resolveAssignment(workspaceId, channelId, stores, {
+    surface: surfaceForChannelId(channelId),
+  });
 }

@@ -315,6 +315,15 @@ test('assignment lookup precedence is exact, workspace wildcard, channel wildcar
   assert.equal(store.find('T_OTHER', 'C_MATCH')?.agentId, 'agent_channel');
   assert.equal(store.find('T_OTHER', 'C_OTHER')?.agentId, 'agent_global');
 
+  // Channel surface (fail-closed): the global '*,*' wildcard does NOT apply, but
+  // workspace- and channel-scoped assignments still do. Direct surface keeps the
+  // global wildcard as the default.
+  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
+  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'direct' })?.agentId, 'agent_global');
+  assert.equal(store.find('T_TEST', 'C_OTHER', { surface: 'channel' })?.agentId, 'agent_workspace');
+  assert.equal(store.find('T_OTHER', 'C_MATCH', { surface: 'channel' })?.agentId, 'agent_channel');
+  assert.equal(store.find('T_TEST', 'C_MATCH', { surface: 'channel' })?.agentId, 'agent_exact');
+
   store.close();
 });
 

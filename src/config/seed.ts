@@ -61,6 +61,11 @@ export const seededAssignments: ChannelAssignment[] = [
     channelLabel: 'exec-briefing',
   },
   {
+    // The global '*,*' wildcard is the DIRECT-conversation default (DMs, App
+    // Home) — NOT a channel catch-all. The config resolver excludes it for
+    // channel turns, so a fresh install is fail-closed in channels: the bot
+    // answers a channel only where a profile is explicitly assigned, but a
+    // teammate can still DM it out of the box. See surfaceForChannelId.
     workspaceId: '*',
     channelId: '*',
     agentId: 'agent_exec_brief',

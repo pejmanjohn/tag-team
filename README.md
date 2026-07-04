@@ -84,7 +84,13 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 Seeded demo profiles:
 
 - `Release Scribe` (`agent_release_scribe`) is assigned to `T_DEMO/C_ENG`; it leads with a summary table and includes a fenced code/diff snippet for engineering demos.
-- `Exec Brief` (`agent_exec_brief`) is assigned to `T_DEMO/C_EXEC` and the wildcard fallback; it uses bold-led bullets, closes with `Next steps`, and avoids code.
+- `Exec Brief` (`agent_exec_brief`) is assigned to `T_DEMO/C_EXEC`; it uses bold-led bullets, closes with `Next steps`, and avoids code. It is also the `*/*` **direct-message default** — the profile that answers DMs and App Home.
+
+Channels are **fail-closed**: the bot answers in a channel only where a profile
+is explicitly assigned (the `*/*` wildcard is the DM default and does not apply
+to channels), so a fresh install never replies in a channel it was merely
+invited to. Direct messages are on by default; set `SLACK_FLUE_ALLOW_DMS=false`
+to make the bot reachable only in channels.
 
 Every final Slack reply includes a footer with the profile name, resolved model
 label, and a Configure link to `/admin?agent=<id>` when `SLACK_FLUE_PUBLIC_URL`

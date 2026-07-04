@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { resolveAgentModel } from './model-policy.ts';
-import { resolveAssignment, type ConfigStores } from './resolver.ts';
+import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type { CustomAgentConfig } from './types.ts';
 
 export const SLACK_RUNTIME_GUARDRAIL =
@@ -34,7 +34,11 @@ export function resolveEffectiveSlackConfig(
   stores: ConfigStores,
   env: NodeJS.ProcessEnv = process.env,
 ): EffectiveSlackConfig {
-  const assignment = resolveAssignment(workspaceId, channelId, stores);
+  // The durable agent and admin resolve from a thread key / channel id (no live
+  // turn), so the surface is inferred from the channel id (D… = direct).
+  const assignment = resolveAssignment(workspaceId, channelId, stores, {
+    surface: surfaceForChannelId(channelId),
+  });
   const model = resolveAgentModel(assignment.agent, env);
   const instructionLayers: InstructionLayer[] = [
     { source: 'profile', label: 'Profile', text: assignment.agent.instructions },

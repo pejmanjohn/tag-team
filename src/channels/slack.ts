@@ -3,7 +3,7 @@ import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
 import { resolveAgentModel } from '../config/model-policy.ts';
-import { resolveAssignment } from '../config/resolver.ts';
+import { resolveAssignment, surfaceForChannelId } from '../config/resolver.ts';
 import { getConfigStore } from '../config/store.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import {
@@ -134,6 +134,15 @@ export const channel = createSlackChannel({
       return;
     }
 
+    // c2. Direct messages / App Home are a separate surface, on by default.
+    //     When SLACK_FLUE_ALLOW_DMS is turned off, the bot is reachable only in
+    //     channels — mirroring Claude Tag's org-wide "Allow direct messages"
+    //     toggle. Checked before any claim so a disabled DM stays fully silent.
+    const surface = surfaceForChannelId(turn.channelId);
+    if (surface === 'direct' && !directMessagesEnabled()) {
+      return;
+    }
+
     // d. Claim BOTH the event id and the (channel, message-ts) so the
     //    app_mention + message fan-out for a single mention replies once.
     const evtKey = `evt:${payload.event_id}`;
@@ -144,14 +153,18 @@ export const channel = createSlackChannel({
       return;
     }
 
-    // e. Gate on an enabled assignment (fail closed if unassigned).
+    // e. Gate on an enabled assignment (fail closed if unassigned). Channels
+    //    never fall through to the global '*,*' wildcard; only direct turns use
+    //    it as their default (see surfaceForChannelId / the config resolver).
     let assignment: ResolvedAssignment;
     try {
       const store = getConfigStore();
-      assignment = resolveAssignment(turn.workspaceId, turn.channelId, {
-        agents: store,
-        assignments: store,
-      });
+      assignment = resolveAssignment(
+        turn.workspaceId,
+        turn.channelId,
+        { agents: store, assignments: store },
+        { surface },
+      );
     } catch (err) {
       state.release(evtKey);
       state.release(msgKey);
@@ -313,7 +326,12 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
   }
   try {
     const store = getConfigStore();
-    resolveAssignment(workspaceId, event.channel, { agents: store, assignments: store });
+    resolveAssignment(
+      workspaceId,
+      event.channel,
+      { agents: store, assignments: store },
+      { surface: 'channel' },
+    );
   } catch {
     return;
   }
@@ -347,6 +365,13 @@ function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): s
   } catch {
     return undefined;
   }
+}
+
+// Direct messages / App Home are on by default; SLACK_FLUE_ALLOW_DMS=false (or
+// 0/off/no) turns them off so the bot is reachable only in channels.
+function directMessagesEnabled(): boolean {
+  const raw = process.env.SLACK_FLUE_ALLOW_DMS?.trim().toLowerCase();
+  return !(raw === 'false' || raw === '0' || raw === 'off' || raw === 'no');
 }
 
 function readingThreadStatus(): SlackStatusUpdate {

@@ -4,6 +4,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { resolveStateDbPath } from '../slack/claim-store.ts';
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
+import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 
@@ -228,12 +229,22 @@ export class SqliteConfigStore {
   // winning specificity turns the channel OFF rather than silently falling
   // through to a broader enabled rule, so PUT {enabled: false} is an explicit
   // off switch — not a reset to the wildcard agent.
-  find(workspaceId: string, channelId: string): ChannelAssignment | undefined {
+  //
+  // The ('*', '*') catch-all is the DIRECT-conversation default only. A 'channel'
+  // surface excludes it entirely (fail-closed): a public/private channel answers
+  // only where an operator explicitly assigned a profile.
+  find(
+    workspaceId: string,
+    channelId: string,
+    options: AssignmentLookupOptions = {},
+  ): ChannelAssignment | undefined {
+    const excludeGlobalWildcard = (options.surface ?? 'direct') === 'channel';
     const row = this.db
       .prepare(
         `SELECT * FROM config_assignments
          WHERE (workspace_id = ? OR workspace_id = '*')
            AND (channel_id = ? OR channel_id = '*')
+           ${excludeGlobalWildcard ? "AND NOT (workspace_id = '*' AND channel_id = '*')" : ''}
          ORDER BY CASE
            WHEN workspace_id = ? AND channel_id = ? THEN 0
            WHEN workspace_id = ? AND channel_id = '*' THEN 1

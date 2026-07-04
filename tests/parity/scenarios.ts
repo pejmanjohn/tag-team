@@ -411,7 +411,10 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S19',
-    title: 'unconfigured workspace/channel gets a wildcard assignment final',
+    title: 'an unconfigured channel is fail-closed — the global wildcard is DM-only',
+    // The default seed's '*,*' wildcard is the direct-conversation default, not
+    // a channel catch-all. A mention in a channel with no explicit assignment
+    // must produce nothing on the wire (channels never fall through to '*,*').
     config: {},
     async run(instance) {
       await instance.postEvent(
@@ -419,12 +422,11 @@ export const scenarios: Scenario[] = [
       );
       await instance.quiesce();
 
-      const finals = instance.backend.finals();
-      assert.equal(finals.length, 1);
-      const [final] = finals;
-      assert.ok(final);
-      assert.equal(final.channel, 'C_OTHER');
-      assert.equal(final.threadTs, ROOT_THREAD_TS);
+      assert.equal(
+        instance.backend.finals().length,
+        0,
+        'an unassigned channel must stay silent (no wildcard fallback for channels)',
+      );
     },
   },
   {
@@ -1005,6 +1007,33 @@ export const scenarios: Scenario[] = [
       );
       await waitForPostMessageCount(instance, 1);
       assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 1);
+    },
+  },
+  {
+    id: 'S33',
+    title: 'SLACK_FLUE_ALLOW_DMS=false silences DMs but leaves channels working',
+    config: {
+      env: { SLACK_FLUE_ALLOW_DMS: 'false' },
+    },
+    async run(instance) {
+      // Direct messages are turned off org-wide → no reply, nothing on the wire.
+      await instance.postEvent(dmMessage());
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.finals().length,
+        0,
+        'a DM must stay silent when direct messages are disabled',
+      );
+      assert.equal(instance.backend.wireLog.length, 0);
+
+      // An assigned channel still replies — the toggle is DM-only.
+      await instance.postEvent(appMention());
+      await instance.quiesce();
+      assert.equal(
+        instance.backend.finals().length,
+        1,
+        'channels are unaffected by the direct-message toggle',
+      );
     },
   },
 ];
