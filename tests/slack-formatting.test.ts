@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   buildSlackAdminUrl,
+  renderChannelOnboarding,
   renderSlackReplyFooterBlock,
   markdownFallbackText,
   renderSlackMessage,
@@ -106,6 +107,22 @@ test('reply footers render profile, model, and optional configure link', () => {
       text: 'Release Scribe | local-stub/parity-stub-1 | Configure',
     },
   ]);
+});
+
+test('channel onboarding discloses mention-only, bounded context, no monitoring, and a Configure link', () => {
+  const linked = renderChannelOnboarding({
+    botUserId: 'U_BOT',
+    channelId: 'C_ENG',
+    publicUrl: 'https://demo.example',
+  });
+  assert.match(linked, /Mention <@U_BOT> to start a thread\./);
+  assert.match(linked, /bounded recent context only when asked/);
+  assert.match(linked, /no passive monitoring/i);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this channel's profile/);
+
+  const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });
+  assert.match(unlinked, /(^|\s)Configure this channel's profile/);
+  assert.doesNotMatch(unlinked, /\|Configure>/);
 });
 
 test('reply sinks default final replies to markdown and progress replies to plain text', () => {

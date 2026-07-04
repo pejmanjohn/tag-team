@@ -13,7 +13,7 @@ import {
   type SlackThreadRegistry,
 } from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
-import { buildSlackAdminUrl } from '../slack/message-format.ts';
+import { renderChannelOnboarding } from '../slack/message-format.ts';
 import type { SlackStatusUpdate } from '../slack/replies.ts';
 import { registerSlackStatusTurn } from '../slack/status-registry.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
@@ -309,23 +309,16 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
   try {
     await getClient().chat.postMessage({
       channel: event.channel,
-      text: channelOnboardingText(resolvedBotUserId, event.channel),
+      text: renderChannelOnboarding({
+        botUserId: resolvedBotUserId,
+        channelId: event.channel,
+        publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
+      }),
     });
   } catch (err) {
     state.release(evtKey);
     throw err;
   }
-}
-
-function channelOnboardingText(botUserId: string, channelId: string): string {
-  const adminUrl = buildSlackAdminUrl(process.env.SLACK_FLUE_PUBLIC_URL, { channelId });
-  const configure = adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
-  return [
-    `Mention <@${botUserId}> to start a thread.`,
-    'Flue Assistant reads the thread and bounded recent context only when asked.',
-    'There is no passive monitoring.',
-    `${configure} this channel's profile in /admin.`,
-  ].join(' ');
 }
 
 function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {

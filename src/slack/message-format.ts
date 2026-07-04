@@ -81,8 +81,6 @@ export function appendSlackReplyFooter(
 }
 
 export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackContextBlock {
-  const adminUrl = buildSlackAdminUrl(footer.publicUrl, { agentId: footer.agentId });
-  const configure = adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
   return {
     type: 'context',
     elements: [
@@ -91,11 +89,40 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
         text: [
           escapeSlackControlCharacters(footer.profileName),
           escapeSlackControlCharacters(footer.modelLabel),
-          configure,
+          renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }),
         ].join(' | '),
       },
     ],
   };
+}
+
+// The one place that turns a public URL into the Slack-visible "Configure" link
+// (an mrkdwn <url|label>, or plain "Configure" when no URL is configured). Both
+// the reply footer and the channel onboarding message render through this so the
+// link syntax and copy never drift between them.
+export function renderSlackConfigureLink(
+  publicUrl: string | undefined,
+  params: SlackAdminUrlParams = {},
+): string {
+  const adminUrl = buildSlackAdminUrl(publicUrl, params);
+  return adminUrl ? `<${adminUrl}|Configure>` : 'Configure';
+}
+
+// The channel onboarding disclosure posted when the bot itself joins a channel.
+// Rendered here (the presentation layer) so all Slack-visible chrome — footer,
+// configure link, onboarding — lives in one place and stays unit-testable.
+export function renderChannelOnboarding(params: {
+  botUserId: string;
+  channelId: string;
+  publicUrl: string | undefined;
+}): string {
+  const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
+  return [
+    `Mention <@${params.botUserId}> to start a thread.`,
+    'Flue Assistant reads the thread and bounded recent context only when asked.',
+    'There is no passive monitoring.',
+    `${configure} this channel's profile in /admin.`,
+  ].join(' ');
 }
 
 export function buildSlackAdminUrl(
@@ -109,7 +136,9 @@ export function buildSlackAdminUrl(
 
   let url: URL;
   try {
-    url = new URL('/admin', trimmed.endsWith('/') ? trimmed : `${trimmed}/`);
+    // '/admin' is root-absolute, so it replaces any path on the base — the
+    // base's own path and trailing slash are irrelevant.
+    url = new URL('/admin', trimmed);
   } catch {
     return undefined;
   }
