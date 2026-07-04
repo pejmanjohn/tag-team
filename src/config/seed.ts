@@ -1,5 +1,13 @@
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 
+// Canonical default model pair for a brand-new profile, shared by the seed and
+// surfaced to the admin UI via /admin/api/models so the client never hardcodes
+// a copy that goes stale when this changes.
+export const SEED_DEFAULT_MODELS = {
+  claude: 'anthropic/claude-sonnet-4-6',
+  'workers-ai': '@cf/zai-org/glm-5.2',
+} as const;
+
 export const seededAgents: CustomAgentConfig[] = [
   {
     id: 'agent_exec_research',
@@ -8,10 +16,7 @@ export const seededAgents: CustomAgentConfig[] = [
     instructions:
       'Use only the configured Slack thread and approved tools. Reply with concise findings and next steps.',
     enabled: true,
-    defaultModels: {
-      claude: 'anthropic/claude-sonnet-4-6',
-      'workers-ai': '@cf/zai-org/glm-5.2',
-    },
+    defaultModels: { ...SEED_DEFAULT_MODELS },
     allowedTools: ['lookup_channel_brief'],
   },
 ];

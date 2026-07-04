@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Hono, type Context, type Next } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
@@ -17,6 +19,7 @@ import {
 } from '../config/errors.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
+import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
 import { getConfigStore, type SqliteConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
@@ -87,14 +90,42 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.notFound();
     }
 
+    // The cookie carries a hash of the token, never the token itself: a captured
+    // cookie can't be replayed as a Bearer credential and doesn't reveal
+    // FLUE_ADMIN_TOKEN. Bearer/query still send the raw token (standard), but the
+    // long-lived browser credential is the derived value.
+    const cookieValue = cookieTokenFor(expected);
+
     const queryToken = c.req.query('token');
     if (constantTimeEquals(queryToken, expected)) {
-      setCookie(c, ADMIN_COOKIE, expected, { path: '/admin', httpOnly: true, sameSite: 'Lax' });
+      setCookie(c, ADMIN_COOKIE, cookieValue, {
+        path: '/admin',
+        httpOnly: true,
+        sameSite: 'Lax',
+        // Send only over TLS when the request arrived over TLS; on plain-http
+        // dev there is no transport to protect, so forcing Secure would just
+        // drop the cookie and break login.
+        secure: isHttps(c),
+      });
+      // Strip ?token= from the URL so the secret does not linger in the address
+      // bar, browser history, or proxy access logs, and is not a standing query
+      // credential. Only redirect the page GET; API callers using ?token get the
+      // cookie set and proceed (they have no address bar to leak into).
+      if (c.req.method === 'GET' && new URL(c.req.url).pathname === '/admin') {
+        return c.redirect('/admin', 303);
+      }
       return next();
     }
 
-    const candidate = bearerToken(c.req.header('authorization')) ?? getCookie(c, ADMIN_COOKIE);
-    if (!constantTimeEquals(candidate, expected)) {
+    const candidate = bearerToken(c.req.header('authorization'));
+    if (candidate !== undefined) {
+      if (!constantTimeEquals(candidate, expected)) {
+        return c.json({ error: 'unauthorized' }, 401);
+      }
+      return next();
+    }
+
+    if (!constantTimeEquals(getCookie(c, ADMIN_COOKIE), cookieValue)) {
       return c.json({ error: 'unauthorized' }, 401);
     }
     return next();
@@ -111,6 +142,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.json({
       automatic: { label: 'Automatic (provider default)', value: null },
       providers: modelProviders(),
+      defaultModels: SEED_DEFAULT_MODELS,
     }),
   );
 
@@ -274,6 +306,22 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 function bearerToken(header: string | undefined): string | undefined {
   const match = header?.match(/^Bearer (.+)$/);
   return match?.[1];
+}
+
+// Cookie value = a hash of the admin token, so the cookie is not itself the
+// admin credential (can't be sent as a Bearer, doesn't leak FLUE_ADMIN_TOKEN).
+function cookieTokenFor(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function isHttps(c: Context): boolean {
+  const forwarded = c.req.header('x-forwarded-proto');
+  if (forwarded) return forwarded.split(',')[0]?.trim() === 'https';
+  try {
+    return new URL(c.req.url).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentConfig {

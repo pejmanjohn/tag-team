@@ -442,7 +442,10 @@ details[open].advanced summary::before { content: "▾"; }
 <div id="modal-root"></div>
 <script>
 (function () {
-  var DEFAULT_MODELS = { claude: "anthropic/claude-sonnet-4-6", "workers-ai": "@cf/zai-org/glm-5.2" };
+  // Fallback only for the very first paint before /admin/api/models resolves;
+  // defaultModels() prefers the server-supplied pair (single source of truth in
+  // src/config/seed.ts) so a bumped seed default never goes stale here.
+  var DEFAULT_MODELS_FALLBACK = { claude: "anthropic/claude-sonnet-4-6", "workers-ai": "@cf/zai-org/glm-5.2" };
   var state = {
     agents: [],
     assignments: [],
@@ -471,6 +474,10 @@ details[open].advanced summary::before { content: "▾"; }
     return '<div class="field"><label class="field-label" for="' + idPrefix + '-workspace">Workspace ID</label><input class="input mono" id="' + idPrefix + '-workspace" name="workspaceId" value="' + esc(draft.workspaceId) + '"></div>' +
       '<div class="field"><label class="field-label" for="' + idPrefix + '-channel">Channel ID</label><input class="input mono" id="' + idPrefix + '-channel" name="channelId" value="' + esc(draft.channelId) + '" placeholder="C0123ABC"></div>' +
       '<div class="field full"><label class="field-label" for="' + idPrefix + '-channel-label">Channel name</label><input class="input" id="' + idPrefix + '-channel-label" name="channelLabel" value="' + esc(draft.channelLabel || "") + '" placeholder="eng-releases"></div>';
+  }
+
+  function defaultModels() {
+    return (state.models && state.models.defaultModels) || DEFAULT_MODELS_FALLBACK;
   }
 
   function esc(value) {
@@ -534,8 +541,21 @@ details[open].advanced summary::before { content: "▾"; }
     return count + " " + (count === 1 ? "channel" : "channels");
   }
 
-  function usedInChannels(agentId) {
-    return concreteAssignments().filter(function (assignment) { return assignment.agentId === agentId; });
+  // Every assignment for the agent, wildcards included — matches the server's
+  // delete guard so the modal's "Used in N" count is honest and each blocking
+  // row (including the seeded '*'/'*' catch-all) has a Remove affordance.
+  function allAssignmentsForAgent(agentId) {
+    return state.assignments.filter(function (assignment) { return assignment.agentId === agentId; });
+  }
+
+  function assignmentByKey(workspaceId, channelId) {
+    return state.assignments.find(function (assignment) {
+      return assignment.workspaceId === workspaceId && assignment.channelId === channelId;
+    }) || null;
+  }
+
+  function isWildcardAssignment(assignment) {
+    return assignment.workspaceId === "*" || assignment.channelId === "*";
   }
 
   function defaultAgent() {
@@ -610,7 +630,7 @@ details[open].advanced summary::before { content: "▾"; }
   }
 
   function profileSectionHtml(agent, assignment) {
-    var meta = agent ? modelLabel(agent) + " · " + toolsLabel(agent.allowedTools) + " · used in " + channelCountLabel(usedInChannels(agent.id).length) : "Unknown profile";
+    var meta = agent ? modelLabel(agent) + " · " + toolsLabel(agent.allowedTools) + " · used in " + channelCountLabel(allAssignmentsForAgent(agent.id).length) : "Unknown profile";
     var row = agent
       ? '<div class="bundle-row"><span class="b-name">' + esc(agent.name) + '</span><span class="b-meta">' + esc(meta) + '</span><span class="spacer"></span><button type="button" class="btn btn-soft btn-sm" data-action="toggle-swap">Change</button><button type="button" class="x-btn" data-action="detach-profile" aria-label="Detach profile">&times;</button></div>'
       : '<div class="empty"><p class="field-label">No profile attached</p><p class="hint">Attach a profile before the channel can answer.</p></div>';
@@ -679,7 +699,7 @@ details[open].advanced summary::before { content: "▾"; }
       profileListHtml() +
       '<div class="tabs"><button type="button" class="tab ' + tabClass("details") + '" data-action="profile-tab" data-tab="details">Details</button><button type="button" class="tab ' + tabClass("instructions") + '" data-action="profile-tab" data-tab="instructions">Instructions</button><button type="button" class="tab ' + tabClass("channels") + '" data-action="profile-tab" data-tab="channels">Channels</button></div>' +
       profileTabHtml(draft) +
-      '<div class="modal-foot"><button type="button" class="btn btn-danger btn-sm" data-action="delete-profile" ' + (!draft.id ? "disabled" : "") + '>Delete profile</button><button type="button" class="btn btn-soft btn-sm" data-action="profile-tab" data-tab="channels">Add to channels</button><span class="hint" style="font-size:0.75rem;">Used in ' + channelCountLabel(usedInChannels(draft.id).length) + '</span><span class="spacer"></span>' + (state.profileError ? '<span class="field-error">' + esc(state.profileError) + '</span>' : "") + '<button type="button" class="btn btn-primary" data-action="save-profile">Done</button></div>' +
+      '<div class="modal-foot"><button type="button" class="btn btn-danger btn-sm" data-action="delete-profile" ' + (!draft.id ? "disabled" : "") + '>Delete profile</button><button type="button" class="btn btn-soft btn-sm" data-action="profile-tab" data-tab="channels">Add to channels</button><span class="hint" style="font-size:0.75rem;">Used in ' + channelCountLabel(allAssignmentsForAgent(draft.id).length) + '</span><span class="spacer"></span>' + (state.profileError ? '<span class="field-error">' + esc(state.profileError) + '</span>' : "") + '<button type="button" class="btn btn-primary" data-action="save-profile">Done</button></div>' +
       '</div></div>';
   }
 
@@ -713,11 +733,16 @@ details[open].advanced summary::before { content: "▾"; }
   }
 
   function profileChannelsHtml(draft) {
-    var attached = usedInChannels(draft.id);
+    var attached = allAssignmentsForAgent(draft.id);
     var rows = attached.length === 0
       ? '<div class="empty"><p class="field-label">No channels yet &mdash; add one</p><p class="hint">Channels added here can append their own instructions on the channel page.</p></div>'
       : attached.map(function (assignment) {
-          return '<div class="bundle-row"><span class="b-name mono" style="font-weight:500;">' + esc(channelLabel(assignment)) + '</span><span class="b-meta">' + esc(assignment.channelId) + ' · ' + (assignment.channelPromptAddendum ? "has channel instructions" : "no channel instructions") + '</span><span class="spacer"></span><button type="button" class="btn btn-danger btn-sm" data-action="remove-profile-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">Remove</button></div>';
+          var wild = isWildcardAssignment(assignment);
+          var name = wild ? "All channels" : channelLabel(assignment);
+          var meta = wild
+            ? esc(assignment.workspaceId) + "/" + esc(assignment.channelId) + " · catch-all fallback"
+            : esc(assignment.channelId) + ' · ' + (assignment.channelPromptAddendum ? "has channel instructions" : "no channel instructions");
+          return '<div class="bundle-row"><span class="b-name mono" style="font-weight:500;">' + esc(name) + '</span><span class="b-meta">' + meta + '</span><span class="spacer"></span><button type="button" class="btn btn-danger btn-sm" data-action="remove-profile-channel" data-workspace="' + esc(assignment.workspaceId) + '" data-channel="' + esc(assignment.channelId) + '">Remove</button></div>';
         }).join("");
     var form = draft.id
       ? '<form class="rail-form" style="margin-left:0;" data-action="profile-add-channel"><div class="form-grid">' + channelFieldsHtml("profile") + '</div><button type="submit" class="btn btn-soft btn-sm">Add to channels</button></form>'
@@ -784,7 +809,7 @@ details[open].advanced summary::before { content: "▾"; }
       instructions: "Answer with concise, factual Slack context.",
       enabled: true,
       model: "",
-      defaultModels: base ? base.defaultModels : DEFAULT_MODELS,
+      defaultModels: base ? base.defaultModels : defaultModels(),
       allowedTools: base ? base.allowedTools : []
     };
   }
@@ -797,7 +822,7 @@ details[open].advanced summary::before { content: "▾"; }
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
-      defaultModels: agent.defaultModels || DEFAULT_MODELS,
+      defaultModels: agent.defaultModels || defaultModels(),
       allowedTools: agent.allowedTools || []
     };
   }
@@ -968,23 +993,33 @@ details[open].advanced summary::before { content: "▾"; }
   // Label persist rule shared by both add-channel forms: an explicitly typed
   // name wins, else keep an existing assignment's label, else empty.
   function resolveChannelLabelToPersist(workspaceId, channelId, rawLabel) {
-    var existing = state.assignments.find(function (assignment) {
-      return assignment.workspaceId === workspaceId && assignment.channelId === channelId;
-    });
+    var existing = assignmentByKey(workspaceId, channelId);
     return normalizeChannelLabel(rawLabel) || (existing && existing.channelLabel) || "";
   }
 
   // One submit flow for the rail form and the profile modal's Channels tab;
   // callers differ only in agent source and error sink. Returns null when
   // validation failed (the fail sink has already rendered the message).
-  function submitChannelForm(formData, agentId, missingAgentMessage, fail) {
+  function submitChannelForm(formData, agentId, missingAgentMessage, fail, blockExisting) {
     var workspaceId = String(formData.get("workspaceId") || "").trim() || "T_DEMO";
     var channelId = String(formData.get("channelId") || "").trim();
     var channelLabel = resolveChannelLabelToPersist(workspaceId, channelId, formData.get("channelLabel"));
     state.channelFormDraft = { workspaceId: workspaceId, channelId: channelId, channelLabel: channelLabel };
     if (!agentId) { fail(missingAgentMessage); return null; }
     if (!channelId) { fail("Channel ID is required."); return null; }
-    return putAssignment(workspaceId, channelId, agentId, true, "", channelLabel).then(function () {
+    var existing = assignmentByKey(workspaceId, channelId);
+    // The rail's "+ Add channel" is for creating a NEW channel — refuse to
+    // silently steal one already assigned to another profile.
+    if (blockExisting && existing) {
+      fail("Channel " + channelId + " is already assigned. Select it from the list to edit.");
+      return null;
+    }
+    // Preserve a re-added channel's enabled flag and channel instructions: the
+    // add form sets the profile and label only, never wiping saved config or
+    // re-enabling a deliberately disabled channel.
+    var enabled = existing ? existing.enabled : true;
+    var addendum = existing ? existing.channelPromptAddendum : undefined;
+    return putAssignment(workspaceId, channelId, agentId, enabled, addendum, channelLabel).then(function () {
       state.active = { workspaceId: workspaceId, channelId: channelId };
     });
   }
@@ -992,7 +1027,7 @@ details[open].advanced summary::before { content: "▾"; }
   function addChannel(formData) {
     var agent = defaultAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
-    var submitted = submitChannelForm(formData, agent && agent.id, "Create a profile before adding a channel.", fail);
+    var submitted = submitChannelForm(formData, agent && agent.id, "Create a profile before adding a channel.", fail, true);
     if (!submitted) return;
     submitted.then(function () {
       state.addChannelOpen = false;
@@ -1005,7 +1040,9 @@ details[open].advanced summary::before { content: "▾"; }
     var assignment = activeAssignment();
     var select = document.querySelector('[data-role="swap-profile"]');
     if (!assignment || !select) return;
-    putAssignment(assignment.workspaceId, assignment.channelId, select.value, state.channelDraft.enabled, state.channelDraft.channelPromptAddendum, assignment.channelLabel).then(function () {
+    // Swap only the profile; keep the channel's persisted enabled/instructions
+    // so an unsaved textarea edit is not committed as a side effect.
+    putAssignment(assignment.workspaceId, assignment.channelId, select.value, assignment.enabled, assignment.channelPromptAddendum, assignment.channelLabel).then(function () {
       state.swapOpen = false;
       return refreshData();
     }).catch(function (error) { state.saveError = error.message; render(); });
@@ -1017,7 +1054,7 @@ details[open].advanced summary::before { content: "▾"; }
     api("/admin/api/assignments?workspaceId=" + encodeURIComponent(assignment.workspaceId) + "&channelId=" + encodeURIComponent(assignment.channelId), { method: "DELETE" }).then(function () {
       state.active = null;
       return refreshData();
-    });
+    }).catch(function (error) { state.saveError = error.message; render(); });
   }
 
   function saveChannel() {
@@ -1039,7 +1076,7 @@ details[open].advanced summary::before { content: "▾"; }
       description: draft.description,
       instructions: draft.instructions,
       enabled: draft.enabled,
-      defaultModels: draft.defaultModels || DEFAULT_MODELS,
+      defaultModels: draft.defaultModels || defaultModels(),
       allowedTools: draft.allowedTools || []
     };
     if (draft.model) body.model = draft.model;
@@ -1082,7 +1119,9 @@ details[open].advanced summary::before { content: "▾"; }
   }
 
   function removeProfileChannel(workspaceId, channelId) {
-    api("/admin/api/assignments?workspaceId=" + encodeURIComponent(workspaceId) + "&channelId=" + encodeURIComponent(channelId), { method: "DELETE" }).then(refreshData);
+    api("/admin/api/assignments?workspaceId=" + encodeURIComponent(workspaceId) + "&channelId=" + encodeURIComponent(channelId), { method: "DELETE" })
+      .then(refreshData)
+      .catch(function (error) { state.profileError = error.message; renderModal(); });
   }
 
   refreshData();

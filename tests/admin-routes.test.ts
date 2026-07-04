@@ -114,17 +114,23 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
   }
 });
 
-test('admin route accepts a one-time query token and sets an HttpOnly admin cookie', async () => {
+test('admin query token redirects to strip the secret and sets a hashed HttpOnly cookie', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
 
     const login = await app.request(`/admin?token=${ADMIN_TOKEN}`);
-    assert.equal(login.status, 200);
+    // The page GET redirects to /admin without the query so the token does not
+    // linger in the address bar / history / access logs.
+    assert.equal(login.status, 303);
+    assert.equal(login.headers.get('location'), '/admin');
+
     const cookie = login.headers.get('set-cookie') ?? '';
     assert.match(cookie, /flue_admin=/);
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /SameSite=Lax/);
+    // The cookie carries a hash, never the raw admin token.
+    assert.doesNotMatch(cookie, new RegExp(ADMIN_TOKEN));
 
     const cookieValue = cookie.split(';')[0] as string;
     const api = await app.request('/admin/api/agents', {
@@ -438,12 +444,13 @@ test('admin API exposes model suggestions for configured provider sources', asyn
           ),
           true,
         );
+        // Custom (non-catalog) providers advertise no fabricated suggestions.
         assert.equal(
           body.providers.some(
             (provider) =>
               provider.id === 'local-stub' &&
               provider.configured &&
-              provider.suggestions.includes('local-stub/admin-agent'),
+              provider.suggestions.length === 0,
           ),
           true,
         );

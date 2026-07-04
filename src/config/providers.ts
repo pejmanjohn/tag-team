@@ -87,6 +87,8 @@ function customProviderEntry(id: string): ProviderCatalogEntry {
   return {
     id,
     envVars: [],
-    suggestions: [`${id}/admin-agent`],
+    // Custom providers have no known model catalog — advertise none rather than
+    // a fabricated specifier the provider does not actually serve.
+    suggestions: [],
   };
 }

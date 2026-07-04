@@ -114,7 +114,7 @@ export class SqliteConfigStore {
     try {
       inserted = this.agentInsertStatement().run(...agentStatementValues(agent));
     } catch (err) {
-      if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+      if (isConstraintViolation(err)) {
         throw new AgentExistsError(agent.id);
       }
       throw err;
@@ -324,6 +324,15 @@ export class SqliteConfigStore {
         .run(SCHEMA_VERSION_KEY, String(latest));
     }
   }
+}
+
+function isConstraintViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const errcode = (err as { errcode?: number }).errcode;
+  if (typeof errcode === 'number') {
+    return (errcode & 0xff) === 19; // SQLITE_CONSTRAINT family
+  }
+  return err.message.includes('constraint failed'); // fallback if errcode absent
 }
 
 function agentStatementValues(agent: CustomAgentConfig): AgentStatementValues {
