@@ -159,9 +159,19 @@ export function slackLoadingMessages(stage: SlackStatusUpdate): string[] {
   return [statusToLoadingMessage(slackStatusText(stage))];
 }
 
+// Slack's assistant.threads.setStatus rejects a loading_messages entry of 51+
+// characters; a rejected call trips the presenter's statusFailed latch and
+// suppresses every later status for the turn. Keep derived loading messages
+// within the limit so a longer fact never silently kills the status line.
+const SLACK_LOADING_MESSAGE_MAX = 50;
+
 function statusToLoadingMessage(status: string): string {
   const withoutSlackPrefix = status.replace(/^is\s+/i, '');
-  return withoutSlackPrefix.charAt(0).toUpperCase() + withoutSlackPrefix.slice(1);
+  const message = withoutSlackPrefix.charAt(0).toUpperCase() + withoutSlackPrefix.slice(1);
+  if (message.length <= SLACK_LOADING_MESSAGE_MAX) {
+    return message;
+  }
+  return `${message.slice(0, SLACK_LOADING_MESSAGE_MAX - 1)}…`;
 }
 
 export function createSlackPresentationEvent(

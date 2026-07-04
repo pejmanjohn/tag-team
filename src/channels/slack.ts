@@ -293,7 +293,7 @@ function hydratedContextStatus(context: SlackTurnContext): SlackStatusUpdate {
   const count = context.messages.length;
   const noun = count === 1 ? 'message' : 'messages';
   return {
-    text: `is using ${count} hydrated ${noun} from ${context.mode} context`,
+    text: `is using ${count} ${noun} of ${context.mode} context`,
   };
 }
 

@@ -94,10 +94,19 @@ test('reply sinks default final replies to markdown and progress replies to plai
 });
 
 test('status updates use factual text and derive loading copy from the same fact', () => {
-  const update = { text: 'is using 2 hydrated messages from channel_history context' };
+  const update = { text: 'is using 2 messages of channel_history context' };
 
   assert.equal(slackStatusText(update), update.text);
   assert.deepEqual(slackLoadingMessages(update), [
-    'Using 2 hydrated messages from channel_history context',
+    'Using 2 messages of channel_history context',
   ]);
+});
+
+test('derived loading message is capped to Slack’s 50-character limit', () => {
+  // A long status must not produce a 51+ char loading message: Slack rejects it,
+  // tripping the presenter latch and killing every later status for the turn.
+  const long = 'is running a-very-long-tool-name-that-exceeds-the-slack-loading-limit';
+  const [loading] = slackLoadingMessages({ text: long });
+  assert.ok(loading);
+  assert.ok(loading.length <= 50, `expected <= 50 chars, got ${loading.length}`);
 });

@@ -88,7 +88,7 @@ export const scenarios: Scenario[] = [
       assert.ok(distinctStatusTexts.length >= 3, 'expected at least three distinct status texts');
       assert.match(distinctStatusTexts[0] ?? '', /reading the thread/);
       assert.ok(
-        distinctStatusTexts.some((text) => /\d+ hydrated message/.test(text)),
+        distinctStatusTexts.some((text) => /using \d+ messages? of .+ context/.test(text)),
         'expected one status to include the hydrated message count',
       );
       assert.ok(

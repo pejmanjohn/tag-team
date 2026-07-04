@@ -464,8 +464,19 @@ export class FakeSlackBackend {
 
   private slackResponse(method: string, body: Record<string, unknown>): Record<string, unknown> {
     switch (method) {
-      case 'assistant.threads.setStatus':
-        return this.rejectSetStatus ? { ok: false, error: 'missing_scope' } : { ok: true };
+      case 'assistant.threads.setStatus': {
+        if (this.rejectSetStatus) {
+          return { ok: false, error: 'missing_scope' };
+        }
+        // Real Slack rejects a loading_messages entry of 51+ characters; mirror
+        // that so an over-long status is caught by the parity suite, not only in
+        // production (where the rejection trips the presenter's status latch).
+        const loadingMessages = Array.isArray(body.loading_messages) ? body.loading_messages : [];
+        if (loadingMessages.some((message) => typeof message === 'string' && message.length > 50)) {
+          return { ok: false, error: 'invalid_arguments' };
+        }
+        return { ok: true };
+      }
       case 'chat.postMessage':
         // Fail only the FIRST markdown (final) post under failFinalDeliveryOnce;
         // plain progress posts and later finals go through.
