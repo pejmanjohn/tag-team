@@ -33,10 +33,15 @@ export interface ResolvedAssignment {
 }
 
 export interface AgentSnapshot {
+  workspaceId: string;
+  channelId: string;
+  agentId: string;
+  channelPromptAddendum?: string;
   agent: CustomAgentConfig;
   model: string;
-  providerId: ProviderId;
+  providerId: string;
   allowedTools: string[];
+  instructions: string;
   snapshotHash: string;
   createdAt: number;
 }

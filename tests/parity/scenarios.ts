@@ -1036,7 +1036,191 @@ export const scenarios: Scenario[] = [
       );
     },
   },
+  {
+    id: 'S34',
+    title: 'started thread keeps its initial instructions after an admin edit',
+    config: snapshotScenarioConfig('agent_snapshot_freeze'),
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S34_T1',
+          event: {
+            text: '<@U_BOT> start with the original snapshot instructions',
+            ts: '1782771600.000100',
+            event_ts: '1782771600.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 1);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+
+      await patchAgent(instance, 'agent_snapshot_freeze', {
+        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited profile instructions.',
+      });
+
+      await instance.postEvent(
+        channelThreadMessage({
+          event_id: 'Ev_S34_T2',
+          event: {
+            text: 'continue in the same thread after the admin edit',
+            ts: '1782771601.000100',
+            event_ts: '1782771601.000100',
+            thread_ts: '1782771600.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+    },
+  },
+  {
+    id: 'S35',
+    title: 'new thread picks up the edited instructions',
+    config: snapshotScenarioConfig('agent_snapshot_new_thread'),
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S35_T1',
+          event: {
+            text: '<@U_BOT> start before the admin edit',
+            ts: '1782771700.000100',
+            event_ts: '1782771700.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 1);
+
+      await patchAgent(instance, 'agent_snapshot_new_thread', {
+        instructions: 'SNAPSHOT_BETA_INSTRUCTIONS: edited profile instructions.',
+      });
+
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S35_T2_NEW_THREAD',
+          event: {
+            text: '<@U_BOT> start a separate thread after the admin edit',
+            ts: '1782771701.000100',
+            event_ts: '1782771701.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+      });
+    },
+  },
+  {
+    id: 'S36',
+    title: 'started thread keeps running after its profile is disabled',
+    config: snapshotScenarioConfig('agent_snapshot_disable'),
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S36_T1',
+          event: {
+            text: '<@U_BOT> start before the profile is disabled',
+            ts: '1782771800.000100',
+            event_ts: '1782771800.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 1);
+
+      await patchAgent(instance, 'agent_snapshot_disable', { enabled: false });
+
+      await instance.postEvent(
+        channelThreadMessage({
+          event_id: 'Ev_S36_T2',
+          event: {
+            text: 'continue after the profile was disabled',
+            ts: '1782771801.000100',
+            event_ts: '1782771801.000100',
+            thread_ts: '1782771800.000100',
+          },
+        }),
+      );
+      await waitForProviderCallCount(instance, 2);
+      assertProviderPrompt(instance, -1, {
+        includes: 'SNAPSHOT_ALPHA_INSTRUCTIONS',
+        excludes: 'SNAPSHOT_BETA_INSTRUCTIONS',
+      });
+    },
+  },
 ];
+
+function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
+  return {
+    configSeed: {
+      agents: [
+        {
+          id: agentId,
+          name: 'Snapshot Profile',
+          description: 'Exercises thread config snapshots.',
+          instructions: 'SNAPSHOT_ALPHA_INSTRUCTIONS: original profile instructions.',
+          enabled: true,
+          model: 'local-stub/snapshot-profile',
+          defaultModels: {
+            claude: 'anthropic/snapshot-claude',
+            'workers-ai': '@cf/snapshot/model',
+          },
+          allowedTools: [],
+        },
+      ],
+      assignments: [
+        {
+          workspaceId: 'T_DEMO',
+          channelId: EXEC_CHANNEL,
+          agentId,
+          enabled: true,
+        },
+      ],
+    },
+  };
+}
+
+async function patchAgent(
+  instance: LaneInstance,
+  agentId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const response = await instance.adminRequest(`/admin/api/agents/${agentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+}
+
+function assertProviderPrompt(
+  instance: LaneInstance,
+  index: number,
+  expected: { includes: string; excludes: string },
+): void {
+  const call = instance.backend.providerCalls().at(index);
+  assert.ok(call, `expected provider call at index ${index}`);
+  const body = JSON.stringify(call.body);
+  assert.match(body, new RegExp(escapeRegExp(expected.includes)));
+  assert.doesNotMatch(body, new RegExp(escapeRegExp(expected.excludes)));
+}
+
+async function waitForProviderCallCount(
+  instance: LaneInstance,
+  expected: number,
+  capMs = 20_000,
+): Promise<void> {
+  await waitForWireCondition(
+    () => instance.backend.providerCalls().length >= expected,
+    `expected at least ${expected} provider calls`,
+    capMs,
+  );
+}
 
 async function waitForFinalCount(
   instance: LaneInstance,

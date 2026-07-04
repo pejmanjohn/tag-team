@@ -35,6 +35,7 @@ const FLUE_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'flue');
 const DIST_NODE_DIR = join(REPO_ROOT, 'dist-node');
 const SERVER_ENTRY = join(DIST_NODE_DIR, 'server.mjs');
 const EVENTS_PATH = '/channels/slack/events';
+const ADMIN_TOKEN = 'parity-admin-token';
 
 const MIN_NODE: readonly number[] = [22, 19, 0];
 
@@ -110,6 +111,7 @@ export const laneB: Lane = {
         // the channel → agent hop is deterministic regardless of Host header.
         FLUE_SELF_URL: baseUrl,
         FLUE_AGENT_API_TOKEN: 'parity-internal-token',
+        FLUE_ADMIN_TOKEN: ADMIN_TOKEN,
         // Stage 4 added `src/db.ts` (file-backed persistence defaulting to
         // ./tmp/flue.db). Every Lane B scenario spawns a fresh process, so pin
         // an in-memory DB to keep each scenario's conversation state isolated
@@ -148,14 +150,16 @@ export const laneB: Lane = {
       async postEvent(payload, opts) {
         const { headers, body } = await signedInit(payload, opts?.tamper === true);
         const response = await fetch(eventsUrl, { method: 'POST', headers, body });
-        const text = await response.text();
-        let parsed: unknown;
-        try {
-          parsed = text ? JSON.parse(text) : undefined;
-        } catch {
-          parsed = text;
+        return responseResult(response);
+      },
+      async adminRequest(path, init = {}) {
+        const headers = new Headers(init.headers);
+        headers.set('authorization', `Bearer ${ADMIN_TOKEN}`);
+        if (init.body !== undefined && !headers.has('content-type')) {
+          headers.set('content-type', 'application/json');
         }
-        return { status: response.status, body: parsed };
+        const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+        return responseResult(response);
       },
       quiesce: () => backend.quiesce(idleMs, capMs),
       async stop() {
@@ -184,6 +188,17 @@ async function signedInit(
   });
   const body = await request.text();
   return { headers, body };
+}
+
+async function responseResult(response: Response): Promise<{ status: number; body: unknown }> {
+  const text = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    parsed = text;
+  }
+  return { status: response.status, body: parsed };
 }
 
 function ensureBuilt(nodeBin: string): Promise<void> {

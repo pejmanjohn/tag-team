@@ -74,7 +74,7 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
 | `FLUE_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `FLUE_AGENT_API_TOKEN`. |
 | `FLUE_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. |
-| `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, and joined-thread registry. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
+| `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, joined-thread registry, and per-thread config snapshots. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_FLUE_MODEL=local-stub/<model>`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the catalog `anthropic` provider. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
@@ -89,7 +89,11 @@ Seeded demo profiles:
 Channels are **fail-closed**: the bot answers in a channel only where a profile
 is explicitly assigned (the `*/*` wildcard is the DM default and does not apply
 to channels), so a fresh install never replies in a channel it was merely
-invited to. Direct messages are on by default; set `SLACK_FLUE_ALLOW_DMS=false`
+invited to. A Slack thread freezes the resolved profile, model, tools, and
+instructions at its first durable turn; existing threads keep the config they
+started with, while admin edits apply only to new threads. This write-once
+snapshot also keeps later execution retries from re-reading a changed profile
+mid-thread. Direct messages are on by default; set `SLACK_FLUE_ALLOW_DMS=false`
 to make the bot reachable only in channels.
 
 Every final Slack reply includes a footer with the profile name, resolved model

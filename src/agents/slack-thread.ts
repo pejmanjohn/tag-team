@@ -2,6 +2,7 @@ import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
 import { getConfigStore } from '../config/store.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
@@ -25,17 +26,19 @@ export const route: AgentRouteHandler = async (c, next) => {
 };
 
 export default defineAgent(async ({ id }) => {
-  const store = getConfigStore();
-  const stores = { agents: store, assignments: store };
-  const { workspaceId, channelId } = parseSlackThreadKey(id);
-  const config = resolveEffectiveSlackConfig(workspaceId, channelId, stores);
-  const tools = config.allowedTools.includes('lookup_channel_brief')
-    ? [createLookupChannelBriefTool(config)]
+  const snapshot = getAgentSnapshotStore().getOrCreate(id, () => {
+    const store = getConfigStore();
+    const stores = { agents: store, assignments: store };
+    const { workspaceId, channelId } = parseSlackThreadKey(id);
+    return resolveEffectiveSlackConfig(workspaceId, channelId, stores);
+  });
+  const tools = snapshot.allowedTools.includes('lookup_channel_brief')
+    ? [createLookupChannelBriefTool(snapshot)]
     : [];
 
   return {
-    model: config.model,
-    instructions: config.instructions,
+    model: snapshot.model,
+    instructions: snapshot.instructions,
     tools,
   };
 });

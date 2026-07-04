@@ -26,6 +26,7 @@ export interface PostEventResult {
 
 export interface LaneInstance {
   postEvent(payload: unknown, opts?: { tamper?: boolean }): Promise<PostEventResult>;
+  adminRequest(path: string, init?: RequestInit): Promise<PostEventResult>;
   backend: FakeSlackBackend;
   /** Poll the wire log until it is idle (no new entries for ~150ms, cap ~5s). */
   quiesce(): Promise<void>;
