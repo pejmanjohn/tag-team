@@ -248,7 +248,15 @@ async function runTurn(
     //    S03/S15/S16 green). clearStatus is a no-op when no status was set. A
     //    provider failure surfaces as a non-2xx ?wait=result envelope; we deliver
     //    the sanitized static final (no provider error text ever reaches Slack).
-    await statusTurn.setStatus(modelStatus(resolveAgentModel(assignment.agent)));
+    // The model status is cosmetic: resolving it must never abort the turn.
+    // If the model is unresolvable (misconfig), skip the status and let the
+    // durable agent's own resolution fail, so promptAgent's catch below still
+    // delivers the sanitized provider-failure final (not silence + a Slack
+    // retry loop from the claims being released on an uncaught throw).
+    const resolvedModel = tryResolveAgentModel(assignment.agent);
+    if (resolvedModel) {
+      await statusTurn.setStatus(modelStatus(resolvedModel));
+    }
     let text: string;
     try {
       text = await promptAgent(turn, prompt, selfBaseUrl);
@@ -261,11 +269,19 @@ async function runTurn(
     await statusTurn.drain();
     await presenter.deliverFinal(text, 'markdown');
   } finally {
-    try {
-      await presenter.clearStatus();
-    } finally {
-      statusTurn.close();
-    }
+    // Close the status registration BEFORE clearing: a late tool_start observed
+    // during the clear window is then a no-op instead of writing a fresh status
+    // the turn never clears.
+    statusTurn.close();
+    await presenter.clearStatus();
+  }
+}
+
+function tryResolveAgentModel(agent: Parameters<typeof resolveAgentModel>[0]): string | undefined {
+  try {
+    return resolveAgentModel(agent);
+  } catch {
+    return undefined;
   }
 }
 

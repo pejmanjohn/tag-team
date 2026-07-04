@@ -36,7 +36,14 @@ class ActiveSlackStatusTurn implements SlackStatusTurnRegistration {
 
   close(): void {
     this.closed = true;
-    activeSlackStatusTurns.delete(this.instanceId);
+    // Identity-guarded: two turns in the same Slack thread share one registry
+    // key (workspace:channel:thread), and a later turn's registration overwrites
+    // an earlier one. Only evict the map entry if it still points at THIS turn,
+    // so an earlier turn finishing never removes a later, still-running turn's
+    // registration (which would silently drop its tool statuses).
+    if (activeSlackStatusTurns.get(this.instanceId) === this) {
+      activeSlackStatusTurns.delete(this.instanceId);
+    }
   }
 }
 

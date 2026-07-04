@@ -17,6 +17,7 @@ import {
 } from './fake-slack.ts';
 import type { ParityException } from './exceptions.ts';
 import type { Lane, LaneInstance, ScenarioLaneConfig } from './lane.ts';
+import { PROVIDER_FAILURE_TEXT } from '../../src/slack/web-client-presenter.ts';
 import type { SlackEventFixture } from '../../src/slack/types.ts';
 
 /** The exec channel / root thread the default fixtures target. */
@@ -731,6 +732,52 @@ export const scenarios: Scenario[] = [
       );
       await instance.quiesce();
       assert.equal(instance.backend.finals().length, 1);
+    },
+  },
+  {
+    id: 'S28',
+    title: 'unresolvable agent model degrades to one sanitized final, not silence',
+    // Agent has no pinned model, and the lane fallback SLACK_FLUE_MODEL is
+    // cleared, so the model cannot resolve. The cosmetic model status must not
+    // abort the turn: the turn must still deliver exactly one sanitized final
+    // (regression for resolveAgentModel throwing on the delivery path, which
+    // previously left the user with silence + a Slack retry loop).
+    config: {
+      env: { SLACK_FLUE_MODEL: '' },
+      configSeed: {
+        agents: [
+          {
+            id: 'agent_unresolvable',
+            name: 'Unresolvable Model Agent',
+            description: 'Has no resolvable model in the parity environment.',
+            instructions: 'Reply if you can.',
+            enabled: true,
+            defaultModels: {
+              claude: 'anthropic/parity-claude',
+              'workers-ai': '@cf/parity/model',
+            },
+            allowedTools: [],
+          },
+        ],
+        assignments: [
+          {
+            workspaceId: 'T_DEMO',
+            channelId: EXEC_CHANNEL,
+            agentId: 'agent_unresolvable',
+            enabled: true,
+          },
+        ],
+      },
+    },
+    async run(instance) {
+      await instance.postEvent(appMention());
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 1, 'an unresolvable model must still deliver one final, not silence');
+      const [final] = finals;
+      assert.ok(final);
+      assert.equal(final.text, PROVIDER_FAILURE_TEXT);
     },
   },
 ];
