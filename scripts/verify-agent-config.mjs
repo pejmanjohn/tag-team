@@ -325,6 +325,16 @@ try {
   console.log(`fake Slack/provider backend listening at ${fake.url}`);
 } catch (error) {
   if (isLoopbackListenDenied(error)) {
+    // The in-process fallback is weaker evidence than the real spawned server
+    // (no real port bind, no real HTTP hop). CI must never take it silently:
+    // FLUE_REQUIRE_LOOPBACK=1 turns a would-be fallback into a hard failure,
+    // same contract as tests/helpers/listen.ts.
+    if (process.env.FLUE_REQUIRE_LOOPBACK === '1') {
+      throw new Error(
+        `FLUE_REQUIRE_LOOPBACK=1 but loopback listen is denied (${error.code}). ` +
+          'This verifier must run against a real server here — do not fall back silently.',
+      );
+    }
     await runInProcessFallback(backend, error);
     finish();
   }
