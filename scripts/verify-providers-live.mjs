@@ -96,10 +96,10 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
     fakeUrl: fake.url,
     netGuardLog,
     env: {
-      FLUE_DB_PATH: ':memory:',
+      TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
-      FLUE_AGENT_API_TOKEN: 'providers-live-internal-token',
-      SLACK_FLUE_MODEL: provider.model,
+      TAG_AGENT_API_TOKEN: 'providers-live-internal-token',
+      SLACK_TAG_MODEL: provider.model,
       NET_GUARD_ALLOW: provider.liveHost,
       // The harness default points LOCAL_STUB_URL at the fake; that is fine —
       // the model id selects the live provider, not the stub.
@@ -140,10 +140,10 @@ function writeLiveArtifact(provider, run) {
       `  Net-guard allowlisted ONLY \`${provider.liveHost}\`; the run logged`,
       `  ${run.liveHits.length} allowed request(s) to it and blocked zero other external hosts,`,
       '  so Slack traffic stayed entirely on the loopback fake.',
-      `- **Model:** \`${provider.model}\` (via \`SLACK_FLUE_MODEL\`).`,
+      `- **Model:** \`${provider.model}\` (via \`SLACK_TAG_MODEL\`).`,
       `- **Provider wiring:** ${provider.wireNote}.`,
       '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_FLUE_MODEL`.',
+      '  lane by swapping only `SLACK_TAG_MODEL`.',
       `- **End-to-end turn latency (spawn→final):** ${run.elapsedMs}ms.`,
       '',
       '## Reply delivered on the Slack wire',

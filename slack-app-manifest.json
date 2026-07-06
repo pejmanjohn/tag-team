@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/slackapi/manifest-schema/main/manifest.schema.json",
   "display_information": {
-    "name": "Flue Assistant",
-    "description": "A self-hosted AI agent for Slack, built on the Flue runtime.",
+    "name": "Tag Team",
+    "description": "A self-hosted, model-agnostic AI agent for Slack.",
     "background_color": "#1a1d21"
   },
   "features": {
@@ -12,11 +12,11 @@
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "Flue Assistant",
+      "display_name": "Tag",
       "always_online": true
     },
     "assistant_view": {
-      "assistant_description": "A self-hosted AI agent for Slack, built on the Flue runtime.",
+      "assistant_description": "A self-hosted, model-agnostic AI agent for Slack.",
       "suggested_prompts": []
     }
   },

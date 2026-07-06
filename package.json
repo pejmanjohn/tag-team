@@ -1,11 +1,11 @@
 {
-  "name": "slack-flue",
+  "name": "tag-team",
   "version": "0.0.0",
-  "description": "Local-first Flue workspace assistant runtime for Slack.",
+  "description": "Self-hosted, model-agnostic AI agent for Slack.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/slack-flue/slack-flue.git"
+    "url": "git+https://github.com/pejmanjohn/tag-team.git"
   },
   "type": "module",
   "engines": {
@@ -13,7 +13,7 @@
   },
   "scripts": {
     "test": "npm run typecheck && node --test --import tsx tests/*.test.ts",
-    "test:ci": "FLUE_REQUIRE_LOOPBACK=1 npm test",
+    "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "flue:build": "flue build --target node",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",

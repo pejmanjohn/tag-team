@@ -769,13 +769,13 @@ export const scenarios: Scenario[] = [
   {
     id: 'S28',
     title: 'unresolvable agent model degrades to one sanitized final, not silence',
-    // Agent has no pinned model, and the lane fallback SLACK_FLUE_MODEL is
+    // Agent has no pinned model, and the lane fallback SLACK_TAG_MODEL is
     // cleared, so the model cannot resolve. The cosmetic model status must not
     // abort the turn: the turn must still deliver exactly one sanitized final
     // (regression for resolveAgentModel throwing on the delivery path, which
     // previously left the user with silence + a Slack retry loop).
     config: {
-      env: { SLACK_FLUE_MODEL: '' },
+      env: { SLACK_TAG_MODEL: '' },
       configSeed: {
         agents: [
           {
@@ -857,7 +857,7 @@ export const scenarios: Scenario[] = [
     id: 'S30',
     title: 'reply footer appears on streamed fallback and provider-failure finals',
     config: demoChannelConfig({
-      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+      env: { SLACK_TAG_PUBLIC_URL: 'https://demo.example' },
     }),
     async run(instance) {
       await instance.postEvent(
@@ -929,7 +929,7 @@ export const scenarios: Scenario[] = [
     id: 'S31',
     title: 'bot channel join posts onboarding once and ignores non-bot joins',
     config: demoChannelConfig({
-      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+      env: { SLACK_TAG_PUBLIC_URL: 'https://demo.example' },
     }),
     async run(instance) {
       const botJoin = memberJoinedChannel({
@@ -985,7 +985,7 @@ export const scenarios: Scenario[] = [
     // assignment. The bot-join onboarding must obey the same fail-closed gate as
     // every turn: greet only where the bot is actually configured.
     config: {
-      env: { SLACK_FLUE_PUBLIC_URL: 'https://demo.example' },
+      env: { SLACK_TAG_PUBLIC_URL: 'https://demo.example' },
       configSeed: {
         agents: [
           {
@@ -1039,9 +1039,9 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'S33',
-    title: 'SLACK_FLUE_ALLOW_DMS=false silences DMs but leaves channels working',
+    title: 'SLACK_TAG_ALLOW_DMS=false silences DMs but leaves channels working',
     config: demoChannelConfig({
-      env: { SLACK_FLUE_ALLOW_DMS: 'false' },
+      env: { SLACK_TAG_ALLOW_DMS: 'false' },
     }),
     async run(instance) {
       // Direct messages are turned off org-wide → no reply, nothing on the wire.

@@ -141,7 +141,7 @@ export const channel = createSlackChannel({
     }
 
     // c2. Direct messages / App Home are a separate surface, on by default.
-    //     When SLACK_FLUE_ALLOW_DMS is turned off, the bot is reachable only in
+    //     When SLACK_TAG_ALLOW_DMS is turned off, the bot is reachable only in
     //     channels (an org-wide direct-message opt-out). Checked before any
     //     claim so a disabled DM stays fully silent.
     const surface = turnSurface(turn);
@@ -201,13 +201,13 @@ export const channel = createSlackChannel({
       } else {
         state.release(evtKey);
         state.release(msgKey);
-        console.error('[slack-flue] no assignment for turn:', sanitizeError(err));
+        console.error('[tag-team] no assignment for turn:', sanitizeError(err));
         // Fail-closed with feedback: the channel stays silent, but the person
         // who explicitly mentioned the bot gets an ephemeral pointer at /admin.
         // Detached so the events ack is not delayed by the Slack Web API call.
         if (err instanceof NoAssignmentError) {
           void postUnassignedChannelHint(turn, surface, state).catch((hintErr) => {
-            console.error('[slack-flue] unassigned-channel hint failed:', sanitizeError(hintErr));
+            console.error('[tag-team] unassigned-channel hint failed:', sanitizeError(hintErr));
           });
         }
         return;
@@ -223,7 +223,7 @@ export const channel = createSlackChannel({
     if (!selfBaseUrl) {
       state.release(evtKey);
       state.release(msgKey);
-      console.error('[slack-flue] rejected self-call: untrusted request origin');
+      console.error('[tag-team] rejected self-call: untrusted request origin');
       return;
     }
 
@@ -241,7 +241,7 @@ export const channel = createSlackChannel({
       // returns normally and keeps its claim, so it never re-runs.
       state.release(evtKey);
       state.release(msgKey);
-      console.error('[slack-flue] turn failed:', sanitizeError(err));
+      console.error('[tag-team] turn failed:', sanitizeError(err));
     });
   },
 });
@@ -258,7 +258,7 @@ export const channel = createSlackChannel({
  * always run against 127.0.0.1/localhost) — any other host is rejected.
  */
 function resolveSelfBaseUrl(requestUrl: string): string | undefined {
-  const configured = process.env.FLUE_SELF_URL;
+  const configured = process.env.TAG_SELF_URL;
   if (configured) return configured;
 
   let origin: URL;
@@ -295,7 +295,7 @@ async function runTurn(
     agentName: assignment.agent.name,
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
-    publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
+    publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
     userId: turn.userId,
     workspaceId: turn.workspaceId,
   });
@@ -333,7 +333,7 @@ async function runTurn(
     try {
       text = await promptAgent(turn, prompt, selfBaseUrl);
     } catch (err) {
-      console.error('[slack-flue] provider call failed:', sanitizeError(err));
+      console.error('[tag-team] provider call failed:', sanitizeError(err));
       await statusTurn.drain();
       await presenter.deliverFinal(PROVIDER_FAILURE_TEXT, 'plain_text');
       return;
@@ -391,14 +391,14 @@ async function handleMemberJoinedChannel(payload: SlackEventFixture): Promise<vo
       text: renderChannelOnboarding({
         botUserId: resolvedBotUserId,
         channelId: event.channel,
-        publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
+        publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
       }),
     });
   } catch (err) {
     // Best-effort courtesy: log and KEEP the claim so a Slack retry cannot
     // double-post the disclosure. Never rethrow — the events route turns a
     // throw into a 500, which is exactly what makes Slack redeliver the event.
-    console.error('[slack-flue] channel onboarding post failed:', sanitizeError(err));
+    console.error('[tag-team] channel onboarding post failed:', sanitizeError(err));
   }
 }
 
@@ -426,7 +426,7 @@ function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
   return 'channel';
 }
 
-// Direct messages / App Home are on by default; SLACK_FLUE_ALLOW_DMS=false (or
+// Direct messages / App Home are on by default; SLACK_TAG_ALLOW_DMS=false (or
 // 0/off/no) turns them off so the bot is reachable only in channels.
 function envFlagDefaultOn(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -434,11 +434,11 @@ function envFlagDefaultOn(name: string): boolean {
 }
 
 function directMessagesEnabled(): boolean {
-  return envFlagDefaultOn('SLACK_FLUE_ALLOW_DMS');
+  return envFlagDefaultOn('SLACK_TAG_ALLOW_DMS');
 }
 
 function unassignedChannelHintEnabled(): boolean {
-  return envFlagDefaultOn('SLACK_FLUE_UNASSIGNED_HINT');
+  return envFlagDefaultOn('SLACK_TAG_UNASSIGNED_HINT');
 }
 
 // Fail-closed feedback: an EXPLICIT mention in a channel with no enabled
@@ -482,7 +482,7 @@ async function postUnassignedChannelHint(
         text: renderUnassignedChannelHint({
           botUserId,
           channelId: turn.channelId,
-          publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
+          publicUrl: process.env.SLACK_TAG_PUBLIC_URL,
         }),
       });
     } catch (err) {
@@ -490,7 +490,7 @@ async function postUnassignedChannelHint(
       throw err;
     }
   } catch (err) {
-    console.error('[slack-flue] unassigned-channel hint failed:', sanitizeError(err));
+    console.error('[tag-team] unassigned-channel hint failed:', sanitizeError(err));
   }
 }
 

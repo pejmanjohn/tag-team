@@ -115,10 +115,10 @@ try {
     fakeUrl: fake.url,
     netGuardLog,
     env: {
-      FLUE_DB_PATH: ':memory:',
+      TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
-      FLUE_AGENT_API_TOKEN: INTERNAL_TOKEN,
-      SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
+      TAG_AGENT_API_TOKEN: INTERNAL_TOKEN,
+      SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
     },
   });
   child = spawned.child;

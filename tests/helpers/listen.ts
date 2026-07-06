@@ -5,14 +5,14 @@ let cachedLoopbackSkipReason: Promise<string | undefined> | undefined;
 // The loopback-dependent suites (Lane B parity, fake-Slack HTTP, live-identity)
 // skip when a sandbox denies listen(127.0.0.1), so a local run stays green. That
 // is dangerous in CI: a silently-skipped Lane B means a parity regression ships
-// unnoticed. Set FLUE_REQUIRE_LOOPBACK=1 in CI so a would-be skip becomes a hard
+// unnoticed. Set TAG_REQUIRE_LOOPBACK=1 in CI so a would-be skip becomes a hard
 // failure instead — the suite must actually run where it can.
 export async function loopbackListenSkipReason(): Promise<string | undefined> {
   cachedLoopbackSkipReason ??= probeLoopbackListen();
   const reason = await cachedLoopbackSkipReason;
-  if (reason && process.env.FLUE_REQUIRE_LOOPBACK === '1') {
+  if (reason && process.env.TAG_REQUIRE_LOOPBACK === '1') {
     throw new Error(
-      `FLUE_REQUIRE_LOOPBACK=1 but ${reason}. These suites must run here — do not let them skip silently.`,
+      `TAG_REQUIRE_LOOPBACK=1 but ${reason}. These suites must run here — do not let them skip silently.`,
     );
   }
   return reason;

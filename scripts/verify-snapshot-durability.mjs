@@ -79,11 +79,11 @@ async function startServer({ serverEntry, fakeUrl, dbPath, stateDbPath, netGuard
     fakeUrl,
     netGuardLog,
     env: {
-      FLUE_DB_PATH: dbPath,
+      TAG_DB_PATH: dbPath,
       SLACK_STATE_DB_PATH: stateDbPath,
-      FLUE_AGENT_API_TOKEN: INTERNAL_TOKEN,
-      FLUE_ADMIN_TOKEN: ADMIN_TOKEN,
-      SLACK_FLUE_MODEL: 'local-stub/snapshot-durability',
+      TAG_AGENT_API_TOKEN: INTERNAL_TOKEN,
+      TAG_ADMIN_TOKEN: ADMIN_TOKEN,
+      SLACK_TAG_MODEL: 'local-stub/snapshot-durability',
     },
   });
   try {

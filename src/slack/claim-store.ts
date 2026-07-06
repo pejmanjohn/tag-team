@@ -123,14 +123,14 @@ export class SqliteSlackStateStore implements SlackClaimStore, SlackThreadRegist
 
 /**
  * Resolve the state-store path from the environment. Defaults alongside the
- * Flue transcript DB (`<FLUE_DB_PATH>.state`, i.e. `./tmp/flue.db.state`);
+ * Flue transcript DB (`<TAG_DB_PATH>.state`, i.e. `./tmp/flue.db.state`);
  * `SLACK_STATE_DB_PATH` overrides it. A `:memory:` transcript DB gets a
  * `:memory:` state store so ephemeral runs stay fully ephemeral.
  */
 export function resolveStateDbPath(env: NodeJS.ProcessEnv = process.env): string {
   const configured = env.SLACK_STATE_DB_PATH;
   if (configured) return configured;
-  const fluePath = env.FLUE_DB_PATH ?? './tmp/flue.db';
+  const fluePath = env.TAG_DB_PATH ?? './tmp/flue.db';
   return fluePath === ':memory:' ? ':memory:' : `${fluePath}.state`;
 }
 

@@ -187,8 +187,8 @@ export class FakeSlackBackend {
     this.identity = {
       appId: slack.identity?.appId ?? 'A_FAKE',
       botUserId: slack.identity?.botUserId ?? 'U_BOT',
-      displayName: slack.identity?.displayName ?? 'Flue Assistant',
-      realName: slack.identity?.realName ?? 'Flue Assistant',
+      displayName: slack.identity?.displayName ?? 'Tag',
+      realName: slack.identity?.realName ?? 'Tag',
       image512Url: slack.identity?.image512Url ?? 'https://avatars.slack-edge.com/fake/flue_512.png',
       image72Url: slack.identity?.image72Url ?? 'https://avatars.slack-edge.com/fake/flue_72.png',
     };

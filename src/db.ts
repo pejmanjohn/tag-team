@@ -10,8 +10,8 @@ import { sqlite } from '@flue/runtime/node';
 // SqliteSlackStateStore in src/slack/claim-store.ts and SLACK_STATE_DB_PATH.)
 //
 // The path defaults to `./tmp/flue.db` (tmp/ is git-ignored). Override with
-// FLUE_DB_PATH — parity/offline harnesses pass `:memory:` for per-process
+// TAG_DB_PATH — parity/offline harnesses pass `:memory:` for per-process
 // isolation. NOTE: db.ts is only supported on the Node build target; the
 // Cloudflare target uses Durable Object SQLite automatically and rejects it,
 // which is why flue.config.ts and `flue:build` target Node.
-export default sqlite(process.env.FLUE_DB_PATH ?? './tmp/flue.db');
+export default sqlite(process.env.TAG_DB_PATH ?? './tmp/flue.db');

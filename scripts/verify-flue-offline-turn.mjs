@@ -99,7 +99,7 @@ try {
     netGuardLog,
     // Pin an in-memory DB so this single-process offline gate stays
     // deterministic across runs (no cross-run accumulation in ./tmp/flue.db).
-    env: { FLUE_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: stateDbPath },
+    env: { TAG_DB_PATH: ':memory:', SLACK_STATE_DB_PATH: stateDbPath },
   });
   child = spawned.child;
   const { baseUrl, eventsUrl, getOutput } = spawned;

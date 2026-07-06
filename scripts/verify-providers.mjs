@@ -5,7 +5,7 @@
  * The SAME signed app_mention fixture is answered twice through the Flue lane —
  * once via the `anthropic` provider (anthropic-messages wire protocol) and once
  * via `cloudflare-workers-ai` (openai-completions wire protocol) — proving one
- * agent reaches two providers by only swapping SLACK_FLUE_MODEL.
+ * agent reaches two providers by only swapping SLACK_TAG_MODEL.
  *
  * PROVENANCE (honest live-vs-stub): this offline harness intentionally runs
  * against local fake provider endpoints. Replies must stay labeled STUB unless
@@ -64,10 +64,10 @@ async function runProvider({ serverEntry, fake, backend, netGuardLog, model, rep
     fakeUrl: fake.url,
     netGuardLog,
     env: {
-      FLUE_DB_PATH: ':memory:',
+      TAG_DB_PATH: ':memory:',
       SLACK_STATE_DB_PATH: stateDbPath,
-      FLUE_AGENT_API_TOKEN: 'providers-internal-token',
-      SLACK_FLUE_MODEL: model,
+      TAG_AGENT_API_TOKEN: 'providers-internal-token',
+      SLACK_TAG_MODEL: model,
       ...env,
     },
   });
@@ -169,11 +169,11 @@ try {
       '- **Provenance:** STUB. The harness points `ANTHROPIC_BASE_URL` at a',
       '  local fake provider endpoint and uses a dummy SDK key that the fake ignores.',
       '  No external Anthropic call is expected during this offline check.',
-      '- **Model:** `anthropic/claude-haiku-4-5` (via `SLACK_FLUE_MODEL`).',
+      '- **Model:** `anthropic/claude-haiku-4-5` (via `SLACK_TAG_MODEL`).',
       '- **Provider wire protocol:** `POST <base>/v1/messages` streaming SSE',
       `  (\`message_start\` → \`content_block_delta\` → \`message_stop\`). Wire methods observed: \`${anthropic.wireMethods.join(', ')}\`.`,
       '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_FLUE_MODEL`.',
+      '  lane by swapping only `SLACK_TAG_MODEL`.',
       '',
       '## Reply delivered on the Slack wire',
       '',
@@ -191,11 +191,11 @@ try {
       '  at a local fake OpenAI-compatible endpoint and uses a dummy token that',
       '  the fake ignores. No external Cloudflare call is expected during this',
       '  offline check.',
-      '- **Model:** `cloudflare-workers-ai/@cf/zai-org/glm-5.2` (via `SLACK_FLUE_MODEL`).',
+      '- **Model:** `cloudflare-workers-ai/@cf/zai-org/glm-5.2` (via `SLACK_TAG_MODEL`).',
       '- **Provider wire protocol:** `POST <base>/v1/chat/completions` streaming SSE',
       `  (OpenAI chat.completion.chunk deltas). Wire methods observed: \`${workersAi.wireMethods.join(', ')}\`.`,
       '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_FLUE_MODEL`.',
+      '  lane by swapping only `SLACK_TAG_MODEL`.',
       '',
       '## Reply delivered on the Slack wire',
       '',

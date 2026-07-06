@@ -104,7 +104,7 @@ test('channelLabel survives the REAL production path: store -> effective config 
       'T_REAL',
       'C0LABELCHAN',
       { agents: store, assignments: store },
-      { SLACK_FLUE_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
+      { SLACK_TAG_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
     );
     assert.equal(effective.channelLabel, 'eng-releases');
 

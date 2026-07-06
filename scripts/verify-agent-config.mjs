@@ -122,8 +122,8 @@ try {
     fakeUrl: fake.url,
     netGuardLog,
     env: {
-      FLUE_DB_PATH: ':memory:',
-      FLUE_ADMIN_TOKEN: ADMIN_TOKEN,
+      TAG_DB_PATH: ':memory:',
+      TAG_ADMIN_TOKEN: ADMIN_TOKEN,
     },
   });
   child = spawned.child;

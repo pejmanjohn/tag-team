@@ -253,14 +253,14 @@ async function runPhase({ label, serverEntry, workDir, preloadPath }) {
   const port = await getFreePort();
 
   const env = {
-    FLUE_DB_PATH: dbPath,
+    TAG_DB_PATH: dbPath,
     LOCAL_STUB_URL: `${provider.url}/v1`,
   };
   // PROBE_MODEL: drive a different model id (e.g. the production
   // `cloudflare-workers-ai/@cf/zai-org/glm-5.2`) through the same recording
   // provider, to measure compaction with the metadata src/app.ts declares.
   if (process.env.PROBE_MODEL) {
-    env.SLACK_FLUE_MODEL = process.env.PROBE_MODEL;
+    env.SLACK_TAG_MODEL = process.env.PROBE_MODEL;
     env.CLOUDFLARE_WORKERS_AI_BASE_URL = `${provider.url}/v1`;
     env.CLOUDFLARE_API_TOKEN = 'probe-offline-key';
   }

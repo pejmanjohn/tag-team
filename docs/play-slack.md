@@ -1,6 +1,6 @@
-# Play With Slack Flue
+# Play With Tag
 
-This is the smallest real Slack loop, driven by the Flue lane with `flue dev --target node`. The agent's model is selected from the runtime agent config first, then live provider credentials, then `SLACK_FLUE_MODEL` as an offline/development fallback. For offline runs, point it at a local stub with `LOCAL_STUB_URL` and `SLACK_FLUE_MODEL=local-stub/<model>`.
+This is the smallest real Slack loop, driven by the Flue lane with `flue dev --target node`. The agent's model is selected from the runtime agent config first, then live provider credentials, then `SLACK_TAG_MODEL` as an offline/development fallback. For offline runs, point it at a local stub with `LOCAL_STUB_URL` and `SLACK_TAG_MODEL=local-stub/<model>`.
 
 ## 1. Create a Slack app
 
@@ -68,13 +68,13 @@ SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs
 export SLACK_SIGNING_SECRET="..."
 export SLACK_BOT_TOKEN="<bot-token>"
 export SLACK_BOT_USER_ID="U..." # optional; resolved via Slack auth.test if omitted
-export FLUE_ADMIN_TOKEN="<long-random-admin-token>" # optional; enables /admin/api/*
-export SLACK_FLUE_PUBLIC_URL="https://<your-tunnel-host>" # optional; enables Slack Configure links
+export TAG_ADMIN_TOKEN="<long-random-admin-token>" # optional; enables /admin/api/*
+export SLACK_TAG_PUBLIC_URL="https://<your-tunnel-host>" # optional; enables Slack Configure links
 # Default provider: the seeded Cloudflare Workers AI model.
 export CLOUDFLARE_ACCOUNT_ID="..."
 export CLOUDFLARE_API_TOKEN="..."
 # Or set the offline fallback model directly, for example:
-# export SLACK_FLUE_MODEL="anthropic/claude-haiku-4-5"
+# export SLACK_TAG_MODEL="anthropic/claude-haiku-4-5"
 # export ANTHROPIC_API_KEY="..."
 flue dev --target node --port 8789
 ```
@@ -82,17 +82,17 @@ flue dev --target node --port 8789
 `flue dev` is a long-running watch-mode dev server (default port 3583; `--port` overrides). It loads `.env` from the project root by default; pass `--env <path>` to select another env file, and shell-exported values always win. See the full env-var table in `README.md`.
 
 By default, the durable transcript DB is `./tmp/flue.db` and the app-owned
-state DB is `<FLUE_DB_PATH>.state`; `flue.config.ts` ignores `tmp/**` during
+state DB is `<TAG_DB_PATH>.state`; `flue.config.ts` ignores `tmp/**` during
 watch mode, so SQLite writes and `-wal`/`-shm` sidecars do not reload the dev
-server. Keep using `FLUE_DB_PATH` and `SLACK_STATE_DB_PATH` when you want an
-explicit self-hosted location, or `FLUE_DB_PATH=:memory:` for ephemeral
+server. Keep using `TAG_DB_PATH` and `SLACK_STATE_DB_PATH` when you want an
+explicit self-hosted location, or `TAG_DB_PATH=:memory:` for ephemeral
 offline/parity runs.
 
 The server exposes:
 
 - `POST /channels/slack/events` — the Slack Events endpoint.
-- `POST /agents/slack-thread/:id` — the durable agent, gated by the shared internal token (`FLUE_AGENT_API_TOKEN`); the channel makes this self-call, you do not call it directly.
-- `/admin/api/*` — runtime agent and assignment CRUD, gated by `FLUE_ADMIN_TOKEN`. If `FLUE_ADMIN_TOKEN` is unset, `/admin/*` returns 404. Do not reuse `FLUE_AGENT_API_TOKEN` for this surface.
+- `POST /agents/slack-thread/:id` — the durable agent, gated by the shared internal token (`TAG_AGENT_API_TOKEN`); the channel makes this self-call, you do not call it directly.
+- `/admin/api/*` — runtime agent and assignment CRUD, gated by `TAG_ADMIN_TOKEN`. If `TAG_ADMIN_TOKEN` is unset, `/admin/*` returns 404. Do not reuse `TAG_AGENT_API_TOKEN` for this surface.
 
 After verifying the request signature, the Slack channel returns a fast HTTP acknowledgement and then runs the turn (context hydration, agent prompt, final delivery) as detached work, so Slack is acknowledged before the reply is produced.
 
@@ -174,25 +174,25 @@ The new `message.channels`, `message.im`, `message.app_home`, and `member_joined
 Invite the bot to a channel, then mention it:
 
 ```text
-@Slack Flue please use channel context and draft an exec summary
+@Tag please use channel context and draft an exec summary
 ```
 
 Expected behavior:
 
-- immediate Assistant status such as `Slack Flue Demo is checking context` where Slack renders Assistant status for the surface;
+- immediate Assistant status such as `Tag Demo is checking context` where Slack renders Assistant status for the surface;
 - one non-threaded channel onboarding message when the bot itself is invited, explaining that users mention the bot to start a thread, it reads the thread and bounded recent context only when asked, and there is no passive monitoring;
 - transient safe loading/status text during approved tool work, such as channel-context gathering;
 - no permanent progress lines such as `Gathering channel context` should remain in the thread after the final answer;
 - streamed final reply from the assigned profile when Slack accepts the streaming APIs;
 - fallback final threaded reply when status or streaming is unavailable;
 - fallback final replies use Slack `markdown` blocks, so standard Markdown like `**bold**`, links, lists, blockquotes, tables, and fenced code should render instead of appearing literally;
-- every final reply carries a footer with the profile name, resolved model label, and a `Configure` link when `SLACK_FLUE_PUBLIC_URL` is set;
+- every final reply carries a footer with the profile name, resolved model label, and a `Configure` link when `SLACK_TAG_PUBLIC_URL` is set;
 - duplicate Slack retries are acknowledged without duplicate posts;
-- a mention in a channel with NO enabled assignment stays fail-closed — the channel gets nothing — but the mentioner alone receives one ephemeral hint (rate-limited per channel) linking to that channel's `/admin` page; set `SLACK_FLUE_UNASSIGNED_HINT=false` to disable the hint entirely.
+- a mention in a channel with NO enabled assignment stays fail-closed — the channel gets nothing — but the mentioner alone receives one ephemeral hint (rate-limited per channel) linking to that channel's `/admin` page; set `SLACK_TAG_UNASSIGNED_HINT=false` to disable the hint entirely.
 
 Response defaults in this slice:
 
-- Channel starts still require an explicit `@Slack Flue` mention.
+- Channel starts still require an explicit `@Tag` mention.
 - Once the bot has replied in a public channel thread during the current process lifetime, later human replies in that same Slack thread can continue the session without another mention when `SLACK_BOT_USER_ID` is configured.
 - Direct messages and App Home messages respond without mention syntax when `SLACK_BOT_USER_ID` is configured.
 - Top-level public-channel messages without a mention are acknowledged and ignored.
@@ -210,31 +210,31 @@ Context defaults:
 For a formatting smoke, mention the bot with a prompt like:
 
 ```text
-@Slack Flue channel context formatting smoke: reply with a short heading, **bold text**, a bullet list, a link, a blockquote, inline code, a fenced code block, and a tiny markdown table.
+@Tag channel context formatting smoke: reply with a short heading, **bold text**, a bullet list, a link, a blockquote, inline code, a fenced code block, and a tiny markdown table.
 ```
 
 The checked-in seed data is the fresh-install starter config:
 
-- app name: `Slack Flue Demo`;
+- app name: `Tag Demo`;
 - provider: `workers-ai`;
 - Workers AI model: `@cf/zai-org/glm-5.2`;
 - starter profile: `agent_release_scribe` (`Release Scribe`), which leads with a summary table and includes a fenced code/diff snippet;
 - starter profile: `agent_exec_brief` (`Exec Brief`), which uses bold-led bullets, closes with `Next steps`, and avoids code;
 - direct-message default: `*/* -> agent_exec_brief` (the profile that answers DMs and App Home — it is NOT a channel catch-all; channels are fail-closed and the wildcard never applies to them).
 
-Set `SLACK_FLUE_PUBLIC_URL` to the same public base URL Slack can reach for this
+Set `SLACK_TAG_PUBLIC_URL` to the same public base URL Slack can reach for this
 server. Reply footers link to `/admin?agent=<id>` and channel onboarding links to
 `/admin?channel=<channel-id>`; when it is unset, Slack shows `Configure` as a
 plain label.
 
-Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<FLUE_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Channels are fail-closed, so a fresh install does not answer in any channel until you assign your own channels in `/admin`; the `*/*` row only governs DMs. Set `SLACK_FLUE_ALLOW_DMS=false` to disable direct messages entirely.
+Runtime agent config and assignments live in the app state SQLite DB (`SLACK_STATE_DB_PATH`, defaulting to `<TAG_DB_PATH>.state`). On an empty DB, `src/config/seed.ts` is copied in once; after that, edit agents and assignments through `/admin/api/*`. New Slack thread agent initializations read the current store without restarting the server. Do not commit private workspace IDs, private channel names, tokens, or customer-specific channel briefs to public docs. Channels are fail-closed, so a fresh install does not answer in any channel until you assign your own channels in `/admin`; the `*/*` row only governs DMs. Set `SLACK_TAG_ALLOW_DMS=false` to disable direct messages entirely.
 
 Model precedence for each agent is:
 
 1. `agent.model` in the runtime config store.
 2. The agent's Anthropic default when `ANTHROPIC_API_KEY` is present.
 3. The agent's Workers AI default when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are present.
-4. `SLACK_FLUE_MODEL` as the offline/dev fallback.
+4. `SLACK_TAG_MODEL` as the offline/dev fallback.
 
 ## 6. Live verification checklist
 
@@ -257,8 +257,8 @@ Rollback: remove `message.channels`, `message.im`, and `message.app_home` subscr
 - Redact Signing Secret, Bot User OAuth Token, app-level tokens, and request headers before capturing screenshots or logs.
 - Pause for confirmation before enabling Agents & AI Apps, adding OAuth scopes, changing event subscriptions, or reinstalling the Slack app.
 - Keep `.env` and `.dev.vars` uncommitted.
-- Keep `FLUE_ADMIN_TOKEN` separate from `FLUE_AGENT_API_TOKEN`; the admin API must fail closed when the admin token is unset.
-- For offline work, drive the app through a local stub provider (`LOCAL_STUB_URL` + `SLACK_FLUE_MODEL=local-stub/<model>`), as the `scripts/verify-*.mjs` evidence scripts do — no external network.
+- Keep `TAG_ADMIN_TOKEN` separate from `TAG_AGENT_API_TOKEN`; the admin API must fail closed when the admin token is unset.
+- For offline work, drive the app through a local stub provider (`LOCAL_STUB_URL` + `SLACK_TAG_MODEL=local-stub/<model>`), as the `scripts/verify-*.mjs` evidence scripts do — no external network.
 - Use a live provider (`cloudflare-workers-ai` via `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, or `anthropic` via `ANTHROPIC_API_KEY`) only from an ignored local env file.
 - If a Cloudflare API token gets `401` from Workers AI, it lacks the Workers AI permission. Mint a dashboard API token (My Profile → API Tokens) that includes Workers AI, and store it only in ignored local env files. `npx wrangler auth token` does NOT work for this — verified 2026-07-02: wrangler's OAuth token gets 401 on both `/ai/run/*` and `/ai/v1/chat/completions`.
 - Treat Slack formatting as an adapter contract: providers should emit concise standard Markdown, and `src/slack/message-format.ts` decides how to post it to Slack.

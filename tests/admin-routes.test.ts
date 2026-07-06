@@ -45,7 +45,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   };
 }
 
-test('admin API returns 404 for every admin route when FLUE_ADMIN_TOKEN is unset', async () => {
+test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store, undefined);
@@ -64,13 +64,13 @@ test('admin API returns 404 for every admin route when FLUE_ADMIN_TOKEN is unset
   }
 });
 
-test('FLUE_AGENT_API_TOKEN does not authorize admin routes', async () => {
+test('TAG_AGENT_API_TOKEN does not authorize admin routes', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     await withEnv(
       {
-        FLUE_ADMIN_TOKEN: undefined,
-        FLUE_AGENT_API_TOKEN: 'agent-api-token',
+        TAG_ADMIN_TOKEN: undefined,
+        TAG_AGENT_API_TOKEN: 'agent-api-token',
       },
       async () => {
         const app = new Hono();
@@ -108,7 +108,7 @@ test('admin API rejects a wrong bearer token and accepts the configured admin to
       headers: auth(ADMIN_TOKEN),
     });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Flue Assistant/);
+    assert.match(await page.text(), /Tag Team/);
   } finally {
     store.close();
   }
@@ -168,7 +168,7 @@ test('admin API rejects unpinned agents that cannot resolve a model in the curre
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,
-        SLACK_FLUE_MODEL: undefined,
+        SLACK_TAG_MODEL: undefined,
       },
       async () => {
         const app = appWithAdmin(store);
@@ -225,7 +225,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,
-        SLACK_FLUE_MODEL: undefined,
+        SLACK_TAG_MODEL: undefined,
       },
       async () => {
         const app = appWithAdmin(store);
@@ -371,7 +371,7 @@ test('admin API supports agent and assignment CRUD with the admin token', async 
 test('main app mounts admin routes before flue routing', async () => {
   await withEnv(
     {
-      FLUE_ADMIN_TOKEN: 'mounted-admin-token',
+      TAG_ADMIN_TOKEN: 'mounted-admin-token',
       SLACK_STATE_DB_PATH: ':memory:',
     },
     async () => {
@@ -514,8 +514,8 @@ test('effective config endpoint resolves through the runtime assignment path', a
 
 test('admin API clears a pinned model with PATCH model: null', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const previousFallback = process.env.SLACK_FLUE_MODEL;
-  process.env.SLACK_FLUE_MODEL = 'local-stub/fallback-after-clear';
+  const previousFallback = process.env.SLACK_TAG_MODEL;
+  process.env.SLACK_TAG_MODEL = 'local-stub/fallback-after-clear';
   try {
     const app = appWithAdmin(store);
     store.createAgent(agent());
@@ -532,9 +532,9 @@ test('admin API clears a pinned model with PATCH model: null', async () => {
     assert.equal('model' in store.getAgent('agent_admin'), false);
   } finally {
     if (previousFallback === undefined) {
-      delete process.env.SLACK_FLUE_MODEL;
+      delete process.env.SLACK_TAG_MODEL;
     } else {
-      process.env.SLACK_FLUE_MODEL = previousFallback;
+      process.env.SLACK_TAG_MODEL = previousFallback;
     }
     store.close();
   }

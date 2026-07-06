@@ -20,13 +20,13 @@ export function resolveAgentModel(
   if (env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_ACCOUNT_ID) {
     return withProviderPrefix('cloudflare-workers-ai', agent.defaultModels['workers-ai']);
   }
-  const fallbackModel = env.SLACK_FLUE_MODEL;
+  const fallbackModel = env.SLACK_TAG_MODEL;
   if (fallbackModel) {
     return fallbackModel;
   }
   throw new ModelResolutionError(
     `No model configured for agent ${agent.id}. Set agent.model, ANTHROPIC_API_KEY, ` +
-      'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or SLACK_FLUE_MODEL.',
+      'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, or SLACK_TAG_MODEL.',
   );
 }
 

@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "slack-flue",
+  "name": "tag-team",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {

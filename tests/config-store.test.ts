@@ -13,7 +13,7 @@ import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.t
 import { withEnv } from './helpers/env.ts';
 
 function tempDbPath(): { dir: string; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'slack-flue-config-store-'));
+  const dir = mkdtempSync(join(tmpdir(), 'tag-team-config-store-'));
   return { dir, path: join(dir, 'state.db') };
 }
 
@@ -328,7 +328,7 @@ test('assignment lookup precedence is exact, workspace wildcard, channel wildcar
 test('getConfigStore writes are visible to later slack-thread initializations in the same process', async () => {
   const { dir, path } = tempDbPath();
 
-  await withEnv({ SLACK_STATE_DB_PATH: path, SLACK_FLUE_MODEL: 'local-stub/cache-test' }, async () => {
+  await withEnv({ SLACK_STATE_DB_PATH: path, SLACK_TAG_MODEL: 'local-stub/cache-test' }, async () => {
     const store = getConfigStore();
     store.createAgent(agent({ id: 'agent_cached', instructions: 'Cached store instructions.' }));
     store.putAssignment(
@@ -374,7 +374,7 @@ test('the direct-message default (the seeded "*,*" row) is resolvable — admin 
       '*',
       '*',
       { agents: store, assignments: store },
-      { SLACK_FLUE_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
+      { SLACK_TAG_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
     );
     assert.equal(effective.agentId, 'agent_exec_brief');
   } finally {

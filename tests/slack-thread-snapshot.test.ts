@@ -76,7 +76,7 @@ test('agent snapshots are purged past the thread TTL, bounding the table', () =>
 });
 
 test('slack-thread freezes effective config per durable thread id', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'slack-flue-thread-snapshot-'));
+  const dir = mkdtempSync(join(tmpdir(), 'tag-team-thread-snapshot-'));
   const dbPath = join(dir, 'state.db');
 
   try {
@@ -88,7 +88,7 @@ test('slack-thread freezes effective config per durable thread id', async () => 
     await withEnv(
       {
         SLACK_STATE_DB_PATH: dbPath,
-        SLACK_FLUE_MODEL: 'local-stub/snapshot-unit-fallback',
+        SLACK_TAG_MODEL: 'local-stub/snapshot-unit-fallback',
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,

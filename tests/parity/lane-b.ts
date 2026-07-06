@@ -67,7 +67,7 @@ export const laneB: Lane = {
     let configDir: string | undefined;
     const configEnv: Record<string, string> = {};
     if (config.configSeed) {
-      configDir = mkdtempSync(join(tmpdir(), 'slack-flue-parity-config-'));
+      configDir = mkdtempSync(join(tmpdir(), 'tag-team-parity-config-'));
       const configDbPath = join(configDir, 'state.db');
       const store = new SqliteConfigStore(configDbPath, config.configSeed);
       store.close();
@@ -85,7 +85,7 @@ export const laneB: Lane = {
       config.botUserId === undefined ? 'U_BOT' : (config.botUserId ?? '');
 
     // Scrub ambient provider credentials: model resolution prefers real creds
-    // over the SLACK_FLUE_MODEL fallback, so a developer/CI shell with
+    // over the SLACK_TAG_MODEL fallback, so a developer/CI shell with
     // ANTHROPIC_API_KEY or Cloudflare creds exported would silently route
     // every scenario's provider traffic to the live API instead of the stub.
     // A scenario that needs them can re-add via `config.env` (spreads last).
@@ -105,19 +105,19 @@ export const laneB: Lane = {
         SLACK_BOT_TOKEN: 'test-bot-token',
         SLACK_API_URL: `${fake.url}/api/`,
         LOCAL_STUB_URL: `${fake.url}/v1`,
-        SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
+        SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
         SLACK_BOT_USER_ID: slackBotUserId,
         // Pin the self-call origin (loopback) and the internal agent token so
         // the channel → agent hop is deterministic regardless of Host header.
-        FLUE_SELF_URL: baseUrl,
-        FLUE_AGENT_API_TOKEN: 'parity-internal-token',
-        FLUE_ADMIN_TOKEN: ADMIN_TOKEN,
+        TAG_SELF_URL: baseUrl,
+        TAG_AGENT_API_TOKEN: 'parity-internal-token',
+        TAG_ADMIN_TOKEN: ADMIN_TOKEN,
         // Stage 4 added `src/db.ts` (file-backed persistence defaulting to
         // ./tmp/flue.db). Every Lane B scenario spawns a fresh process, so pin
         // an in-memory DB to keep each scenario's conversation state isolated
         // (a shared file would cross-contaminate). `:memory:` matches the exact
         // pre-db.ts default (in-memory SQLite, process lifetime).
-        FLUE_DB_PATH: ':memory:',
+        TAG_DB_PATH: ':memory:',
         ...configEnv,
         ...(config.env ?? {}),
       },

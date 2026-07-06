@@ -12,7 +12,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 // per-process random token generated once at module scope: `flue dev` runs
 // the channel and the agent in the same process, so the self-call and the
 // route guard share this value even though no token was configured.
-export const INTERNAL_AGENT_TOKEN = process.env.FLUE_AGENT_API_TOKEN ?? randomUUID();
+export const INTERNAL_AGENT_TOKEN = process.env.TAG_AGENT_API_TOKEN ?? randomUUID();
 
 export const INTERNAL_AGENT_TOKEN_HEADER = 'x-flue-internal-token';
 

@@ -137,7 +137,7 @@ export function renderChannelOnboarding(params: {
   const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
   return [
     `Mention <@${params.botUserId}> to start a thread.`,
-    'Flue Assistant reads the thread and bounded recent context only when asked.',
+    'Tag reads the thread and bounded recent context only when asked.',
     'There is no passive monitoring.',
     `${configure} this channel's profile in /admin.`,
   ].join(' ');

@@ -4,7 +4,7 @@ export function renderAdminPage(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>slack-flue /admin</title>
+<title>Tag Team · /admin</title>
 <style>
 :root {
   --bg: #ffffff;
@@ -422,8 +422,8 @@ details[open].advanced summary::before { content: "▾"; }
 <div id="app" class="frame">
   <header class="topbar">
     <div class="brand">
-      <span class="avatar">F</span>
-      <span class="brand-name">Flue Assistant</span>
+      <span class="avatar">T</span>
+      <span class="brand-name">Tag Team</span>
       <span class="chip">local · node</span>
     </div>
     <div class="actions">
@@ -588,7 +588,7 @@ details[open].advanced summary::before { content: "▾"; }
 
   function topbarHtml() {
     return '<header class="topbar">' +
-      '<div class="brand"><span class="avatar">F</span><span class="brand-name">Flue Assistant</span><span class="chip">local · node</span></div>' +
+      '<div class="brand"><span class="avatar">T</span><span class="brand-name">Tag Team</span><span class="chip">local · node</span></div>' +
       '<div class="actions"><a class="btn btn-ghost" href="https://api.slack.com/apps" rel="noreferrer">Open Slack console &nearr;</a>' +
       '<button type="button" class="btn btn-soft" data-action="open-profiles">Profiles</button></div>' +
       "</header>";
@@ -647,7 +647,7 @@ details[open].advanced summary::before { content: "▾"; }
     return '<main class="main"><div class="main-inner">' +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Flue Assistant can do in this channel. It answers mentions here, always as @Flue Assistant.</p>' +
+      '<p class="hint">What Tag can do in this channel. It answers mentions here, always as @Tag.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -687,7 +687,7 @@ details[open].advanced summary::before { content: "▾"; }
       var profile = state.effective.profile;
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>Flue Assistant &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>Tag &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
         '<div class="kv"><dt>Model</dt><dd class="mono">' + esc(state.effective.model) + '</dd></div>' +
         '<div class="kv"><dt>Provider</dt><dd class="mono">' + esc(state.effective.provider) + '</dd></div>' +
         '<div class="kv"><dt>Allowed tools</dt><dd>' + toolsChips(state.effective.allowedTools) + '</dd></div>' +
@@ -749,7 +749,7 @@ details[open].advanced summary::before { content: "▾"; }
   function profileDetailsHtml(draft) {
     var warning = modelWarning(draft.model || "");
     return '<form class="form-grid" data-action="profile-form">' +
-      '<div class="field"><label class="field-label" for="p-name">Name</label><input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"><p class="hint">Internal label. Replies in Slack always post as Flue Assistant.</p></div>' +
+      '<div class="field"><label class="field-label" for="p-name">Name</label><input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"><p class="hint">Internal label. Replies in Slack always post as Tag.</p></div>' +
       '<div class="field"><label class="field-label" for="p-model">Model</label><input class="input mono" id="p-model" name="model" type="text" value="' + esc(draft.model || "") + '" role="combobox" aria-expanded="true" placeholder="Automatic (provider default)"><p class="hint">Automatic by default. Suggestions come from this install\\'s providers; any provider/model specifier works.</p>' + (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") + modelPickerHtml(draft.model || "") + '</div>' +
       '<div class="field full"><label class="field-label" for="p-desc">Description</label><input class="input" id="p-desc" name="description" type="text" value="' + esc(draft.description) + '"></div>' +
       '<div class="field full" style="flex-direction:row; align-items:center; gap:10px;"><span class="toggle"><span class="thumb"></span><input type="checkbox" name="enabled" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span><span class="field-label" style="display:inline;">Enabled</span><span class="hint">Disabled profiles stop answering in every channel they are attached to.</span></div>' +

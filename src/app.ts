@@ -44,7 +44,7 @@ if (process.env.ANTHROPIC_BASE_URL) {
 }
 
 // Offline / local stub provider speaking the OpenAI-completions wire protocol.
-// Enables `SLACK_FLUE_MODEL=local-stub/<model>` against a fake provider.
+// Enables `SLACK_TAG_MODEL=local-stub/<model>` against a fake provider.
 if (process.env.LOCAL_STUB_URL) {
   registerProvider('local-stub', {
     api: 'openai-completions',

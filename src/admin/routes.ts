@@ -77,7 +77,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
   const store = () => options.store ?? getConfigStore();
   const adminToken = () =>
-    tokenFromOptions ? options.adminToken : process.env.FLUE_ADMIN_TOKEN;
+    tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
     options.knownProviders
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
@@ -92,7 +92,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     // The cookie carries a hash of the token, never the token itself: a captured
     // cookie can't be replayed as a Bearer credential and doesn't reveal
-    // FLUE_ADMIN_TOKEN. Bearer/query still send the raw token (standard), but the
+    // TAG_ADMIN_TOKEN. Bearer/query still send the raw token (standard), but the
     // long-lived browser credential is the derived value.
     const cookieValue = cookieTokenFor(expected);
 
@@ -309,7 +309,7 @@ function bearerToken(header: string | undefined): string | undefined {
 }
 
 // Cookie value = a hash of the admin token, so the cookie is not itself the
-// admin credential (can't be sent as a Bearer, doesn't leak FLUE_ADMIN_TOKEN).
+// admin credential (can't be sent as a Bearer, doesn't leak TAG_ADMIN_TOKEN).
 function cookieTokenFor(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -420,7 +420,7 @@ function internalError(
   c: { json(body: { error: string }, status: 500): Response },
   err: unknown,
 ): Response {
-  console.error('[slack-flue] admin API failure:', err instanceof Error ? err.message : String(err));
+  console.error('[tag-team] admin API failure:', err instanceof Error ? err.message : String(err));
   return c.json({ error: 'internal_error' }, 500);
 }
 

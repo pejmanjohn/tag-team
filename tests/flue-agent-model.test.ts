@@ -37,7 +37,7 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
 }
 
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'slack-flue-model-seed-'));
+  const dir = mkdtempSync(join(tmpdir(), 'tag-team-model-seed-'));
   const dbPath = join(dir, 'state.db');
   const store = new SqliteConfigStore(dbPath, {
     agents: seededAgents,
@@ -62,7 +62,7 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-        SLACK_FLUE_MODEL: undefined,
+        SLACK_TAG_MODEL: undefined,
       },
       () => slackThreadAgent.initialize({ id: THREAD_KEY, env: {} }),
     );
@@ -86,7 +86,7 @@ test('model policy prefers an explicit per-agent model over provider credentials
         ANTHROPIC_API_KEY: 'anthropic-key',
         CLOUDFLARE_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-        SLACK_FLUE_MODEL: 'local-stub/fallback',
+        SLACK_TAG_MODEL: 'local-stub/fallback',
       },
     ),
     'local-stub/agent-pinned',
@@ -99,7 +99,7 @@ test('model policy uses the agent Anthropic default when Anthropic credentials e
       ANTHROPIC_API_KEY: 'anthropic-key',
       CLOUDFLARE_API_TOKEN: 'cf-token',
       CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-      SLACK_FLUE_MODEL: 'local-stub/fallback',
+      SLACK_TAG_MODEL: 'local-stub/fallback',
     }),
     'anthropic/claude-sonnet-model',
   );
@@ -111,19 +111,19 @@ test('model policy uses the Workers AI default when only Cloudflare credentials 
       ANTHROPIC_API_KEY: undefined,
       CLOUDFLARE_API_TOKEN: 'cf-token',
       CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-      SLACK_FLUE_MODEL: 'local-stub/fallback',
+      SLACK_TAG_MODEL: 'local-stub/fallback',
     }),
     'cloudflare-workers-ai/@cf/workers/model',
   );
 });
 
-test('model policy falls back to SLACK_FLUE_MODEL when provider credentials are absent', () => {
+test('model policy falls back to SLACK_TAG_MODEL when provider credentials are absent', () => {
   assert.equal(
     resolveAgentModel(modelAgent(), {
       ANTHROPIC_API_KEY: undefined,
       CLOUDFLARE_API_TOKEN: undefined,
       CLOUDFLARE_ACCOUNT_ID: undefined,
-      SLACK_FLUE_MODEL: 'local-stub/offline-fallback',
+      SLACK_TAG_MODEL: 'local-stub/offline-fallback',
     }),
     'local-stub/offline-fallback',
   );
@@ -136,14 +136,14 @@ test('model policy fails with actionable env names when no model can be selected
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,
-        SLACK_FLUE_MODEL: undefined,
+        SLACK_TAG_MODEL: undefined,
       }),
-    /agent\.model.*ANTHROPIC_API_KEY.*CLOUDFLARE_API_TOKEN.*CLOUDFLARE_ACCOUNT_ID.*SLACK_FLUE_MODEL/s,
+    /agent\.model.*ANTHROPIC_API_KEY.*CLOUDFLARE_API_TOKEN.*CLOUDFLARE_ACCOUNT_ID.*SLACK_TAG_MODEL/s,
   );
 });
 
 test('slack-thread initializes from the SQLite config store for the current state DB path', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'slack-flue-agent-config-'));
+  const dir = mkdtempSync(join(tmpdir(), 'tag-team-agent-config-'));
   const dbPath = join(dir, 'state.db');
   const store = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
   store.createAgent({
@@ -170,7 +170,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
     const config = await withEnv(
       {
         SLACK_STATE_DB_PATH: dbPath,
-        SLACK_FLUE_MODEL: 'local-stub/runtime-fallback',
+        SLACK_TAG_MODEL: 'local-stub/runtime-fallback',
         // Scrub ambient provider creds: they outrank the fallback model and
         // would flip the resolved model on a developer/CI machine.
         ANTHROPIC_API_KEY: undefined,

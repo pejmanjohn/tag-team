@@ -138,13 +138,13 @@ export async function postSignedEvent(eventsUrl, payload, opts = {}) {
 
 /**
  * Spawn a built Flue server. `env` is merged last (so callers set provider
- * routing, FLUE_DB_PATH, tokens, etc.). Returns the child + an output getter
+ * routing, TAG_DB_PATH, tokens, etc.). Returns the child + an output getter
  * and the base URL / events URL.
  */
 export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} }) {
   const baseUrl = `http://127.0.0.1:${port}`;
   // Scrub ambient provider credentials so the offline gates stay hermetic:
-  // model resolution prefers real creds over the SLACK_FLUE_MODEL pin. A
+  // model resolution prefers real creds over the SLACK_TAG_MODEL pin. A
   // script that intends to exercise a provider passes its own values via
   // `env`, which spreads after (and therefore overrides) this scrub.
   const ambientEnv = { ...process.env };
@@ -163,8 +163,8 @@ export function spawnServer({ serverEntry, port, fakeUrl, netGuardLog, env = {} 
       SLACK_BOT_USER_ID: 'U_BOT',
       SLACK_API_URL: `${fakeUrl}/api/`,
       LOCAL_STUB_URL: `${fakeUrl}/v1`,
-      SLACK_FLUE_MODEL: 'local-stub/parity-stub-1',
-      FLUE_SELF_URL: baseUrl,
+      SLACK_TAG_MODEL: 'local-stub/parity-stub-1',
+      TAG_SELF_URL: baseUrl,
       ...(netGuardLog ? { NET_GUARD_LOG: netGuardLog, NODE_OPTIONS: `--import ${NET_GUARD}` } : {}),
       ...env,
     },

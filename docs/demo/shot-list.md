@@ -14,10 +14,10 @@ rather than waiting on camera.
    `cloudflared tunnel --url http://localhost:8789` → note `https://<host>`.
 3. Start the server with **the state DB outside the repo** — `flue dev`
    watches the tree and a repo-local SQLite DB causes an endless reload loop:
-   `FLUE_DB_PATH=/tmp/flue-demo.db` (plus `.state` sibling, created
+   `TAG_DB_PATH=/tmp/flue-demo.db` (plus `.state` sibling, created
    automatically). Also export: real Slack creds for the demo app,
-   `FLUE_ADMIN_TOKEN`, `FLUE_SELF_URL=http://127.0.0.1:8789`,
-   `SLACK_FLUE_PUBLIC_URL=https://<tunnel-host>` (the footer Configure links
+   `TAG_ADMIN_TOKEN`, `TAG_SELF_URL=http://127.0.0.1:8789`,
+   `SLACK_TAG_PUBLIC_URL=https://<tunnel-host>` (the footer Configure links
    are real on camera only if this is set).
 4. Slack console → the demo app → Event Subscriptions → update the Request URL
    to the new tunnel host → must show **Verified**.
@@ -35,7 +35,7 @@ rather than waiting on camera.
 9. Channels `#eng-releases` and `#exec-updates` exist; bot NOT yet a member;
    1–2 realistic context messages already posted in `#eng-releases` (e.g. the
    auth-service staging update) so the first answer has real material.
-10. `/admin?token=<FLUE_ADMIN_TOKEN>` opened once in the recording browser
+10. `/admin?token=<TAG_ADMIN_TOKEN>` opened once in the recording browser
     (sets the cookie and strips the token from the URL).
 
 ## Shots
@@ -45,9 +45,9 @@ rather than waiting on camera.
 | 1 | /admin | Click **+ Add channel**; fix Workspace ID (it prefills `T_DEMO`), paste channel ID from the Slack URL, name `eng-releases`, **Add** | — | Channel appears in rail, channel page opens | 0–10s |
 | 2 | /admin | **Manage profiles → + New profile**: name `Release Scribe`, model picker → select `anthropic/claude-sonnet-4-6`, description; Instructions tab → paste profile instructions; **Done** | Instructions: "You are Release Scribe, the engineering release-notes profile… compact summary table… fenced code or diff snippet… name owners and versions, skip pleasantries." | Tag-style modal; combobox shows runtime-detected providers | 10–18s |
 | 3 | /admin | **Change** profile on `#eng-releases` → select Release Scribe → **Attach**; type channel instructions; **Save changes** | Channel instructions: "In #eng-releases, close every answer with a short 'Ship checklist' of 2-3 concrete items." | Access summary re-resolves: profile, explicit model, layered PROFILE → CHANNEL INSTRUCTIONS (highlighted) → RUNTIME → GUARDRAIL, snapshot hash | 18–25s |
-| 4 | Slack `#eng-releases` | Type `@Flue Assistant` (Return to select the token!), short invite line, send; click Slackbot's **Add Them** | `joining us for release notes duty` | Bot joins; **onboarding message** posts: "Mention @Flue Assistant to start a thread… no passive monitoring… Configure" | 25–33s |
-| 5 | Slack `#eng-releases` | Mention with the real question | `@Flue Assistant draft the auth-service 2.1 release notes for the payments team, based on this channel's recent updates` | Status line appears immediately, changes to `Running lookup_channel_brief`, then clears; threaded reply with **rendered table block, key-changes bullets, colored diff code block, Ship checklist**, footer `Release Scribe \| anthropic/claude-sonnet-4-6 \| Configure` | 33–52s (turn ≈ 15s — cut to the reply) |
-| 6 | Slack `#exec-updates` | Same invite dance, then mention | `@Flue Assistant what does the auth-service 2.1 release mean for the business?` | Same install, completely different voice: bold-led bullets, risk framing, "Next steps", **no code**; footer shows `Exec Brief` | 52–65s |
+| 4 | Slack `#eng-releases` | Type `@Tag` (Return to select the token!), short invite line, send; click Slackbot's **Add Them** | `joining us for release notes duty` | Bot joins; **onboarding message** posts: "Mention @Tag to start a thread… no passive monitoring… Configure" | 25–33s |
+| 5 | Slack `#eng-releases` | Mention with the real question | `@Tag draft the auth-service 2.1 release notes for the payments team, based on this channel's recent updates` | Status line appears immediately, changes to `Running lookup_channel_brief`, then clears; threaded reply with **rendered table block, key-changes bullets, colored diff code block, Ship checklist**, footer `Release Scribe \| anthropic/claude-sonnet-4-6 \| Configure` | 33–52s (turn ≈ 15s — cut to the reply) |
+| 6 | Slack `#exec-updates` | Same invite dance, then mention | `@Tag what does the auth-service 2.1 release mean for the business?` | Same install, completely different voice: bold-led bullets, risk framing, "Next steps", **no code**; footer shows `Exec Brief` | 52–65s |
 | 7 | /admin + Slack | Edit Release Scribe instructions (make a LOUD change — see record §snapshot-beat), Save; reply (no mention) in the old thread; then fresh mention in the channel | Old thread: unchanged voice (frozen snapshot). New thread: new behavior. Optionally show the Access summary "Snapshot … new threads only" hash changing | 65–78s |
 | 8 | Repo card | Static end card | — | GitHub URL + "built by extending Cloudflare's Flue framework" + seam names (defineAgent, defineTool, registerProvider) | 78–90s |
 

@@ -1,9 +1,10 @@
-# slack-flue
+# Tag Team
 
-A Slack bot built on the [Flue](https://www.npmjs.com/package/@flue/runtime) agent
-runtime. It answers `@`-mentions, threaded replies, and DMs in Slack: it verifies
+Tag Team is a self-hosted, model-agnostic AI agent for Slack. It answers
+`@`-mentions, threaded replies, and DMs in Slack: it verifies
 the request signature, normalizes the event into a runnable turn, hydrates bounded
-channel/thread context, and drives a durable Flue agent that streams a final reply
+channel/thread context, and drives a durable
+[Flue](https://www.npmjs.com/package/@flue/runtime) agent that streams a final reply
 back into the thread. Per-channel assignments map a workspace + channel to a named
 profile (instructions, model, allowed tools); an assignment-scoped
 `lookup_channel_brief` tool is exposed to profiles that opt in. The Slack-visible
@@ -68,16 +69,16 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `SLACK_BOT_TOKEN` | yes | Bot token for outbound Slack Web API calls. |
 | `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
-| `SLACK_FLUE_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
-| `SLACK_FLUE_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
-| `SLACK_FLUE_ALLOW_DMS` | optional | Direct messages are on by default; `false` makes the bot reachable only in channels. |
-| `SLACK_FLUE_UNASSIGNED_HINT` | optional | On by default: a mention in a channel with no enabled assignment posts one ephemeral hint (rate-limited per channel) to the mentioner linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
-| `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
-| `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
-| `FLUE_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `FLUE_AGENT_API_TOKEN`. |
-| `FLUE_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
-| `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, joined-thread registry, and per-thread config snapshots. Defaults to `<FLUE_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. The default sibling state DB and SQLite sidecars are also under the ignored `tmp/**` tree. |
-| `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_FLUE_MODEL=local-stub/<model>`). |
+| `SLACK_TAG_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
+| `SLACK_TAG_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
+| `SLACK_TAG_ALLOW_DMS` | optional | Direct messages are on by default; `false` makes the bot reachable only in channels. |
+| `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in a channel with no enabled assignment posts one ephemeral hint (rate-limited per channel) to the mentioner linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
+| `TAG_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
+| `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
+| `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `TAG_AGENT_API_TOKEN`. |
+| `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
+| `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, joined-thread registry, and per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. The default sibling state DB and SQLite sidecars are also under the ignored `tmp/**` tree. |
+| `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register an offline `local-stub` provider speaking the OpenAI-completions wire protocol (`SLACK_TAG_MODEL=local-stub/<model>`). |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the catalog `anthropic` provider. |
 | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider. |
 
@@ -94,16 +95,16 @@ is explicitly assigned (the `*/*` wildcard is the DM default and does not apply
 to channels), so a fresh install never replies in a channel it was merely
 invited to. When someone explicitly mentions the bot in an unassigned channel,
 the channel still gets nothing — only the mentioner receives a single ephemeral
-hint pointing at that channel's `/admin` page (`SLACK_FLUE_UNASSIGNED_HINT=false`
+hint pointing at that channel's `/admin` page (`SLACK_TAG_UNASSIGNED_HINT=false`
 turns this off). A Slack thread freezes the resolved profile, model, tools, and
 instructions at its first durable turn; existing threads keep the config they
 started with, while admin edits apply only to new threads. This write-once
 snapshot also keeps later execution retries from re-reading a changed profile
-mid-thread. Direct messages are on by default; set `SLACK_FLUE_ALLOW_DMS=false`
+mid-thread. Direct messages are on by default; set `SLACK_TAG_ALLOW_DMS=false`
 to make the bot reachable only in channels.
 
 Every final Slack reply includes a footer with the profile name, resolved model
-label, and a Configure link to `/admin?agent=<id>` when `SLACK_FLUE_PUBLIC_URL`
+label, and a Configure link to `/admin?agent=<id>` when `SLACK_TAG_PUBLIC_URL`
 is set. When the bot itself is invited to a channel, it posts one non-threaded
 onboarding message explaining that users should mention the bot to start a
 thread, that it reads the thread and bounded recent context only when asked, and
@@ -114,7 +115,7 @@ Model selection is per agent:
 1. `agent.model` from the runtime config store, when set.
 2. The agent's Anthropic default when `ANTHROPIC_API_KEY` is present.
 3. The agent's Workers AI default when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are present.
-4. `SLACK_FLUE_MODEL` as the offline/dev fallback.
+4. `SLACK_TAG_MODEL` as the offline/dev fallback.
 
 If none of those are available, agent initialization fails with an error naming
 the missing env vars. Runtime agent and assignment config is seeded into the app
@@ -132,7 +133,7 @@ FLUE_NODE_BIN=/path/to/node npm test
 The suite includes the 31 parity scenarios on the Flue lane (Lane B), the
 admin/config-store checks, identity checks, fake-Slack smoke tests, Slack
 formatting, the agent model resolver, and the turn-normalization/history-window
-unit tests. Set `FLUE_REQUIRE_LOOPBACK=1` when parity must be proven, so a
+unit tests. Set `TAG_REQUIRE_LOOPBACK=1` when parity must be proven, so a
 loopback-denied environment fails instead of silently skipping Lane B.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`):
