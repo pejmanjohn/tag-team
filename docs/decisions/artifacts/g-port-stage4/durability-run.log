@@ -1,6 +1,6 @@
-fake backend listening at http://127.0.0.1:63535
+fake backend listening at http://127.0.0.1:63003
 built node server: /Users/pejman/code/slack-flue/dist/server.mjs
-node v24.16.0  DB_A=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbA-tSru1V/flue.db  DB_B=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbB-38LrWO/flue.db
+node v24.16.0  DB_A=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbA-Ss6zg5/flue.db  DB_B=/var/folders/z1/5zygr2kd0fl54_shsdz1zfyw0000gp/T/flue-dur-dbB-em13Yd/flue.db
 PASS  T1 delivers a final carrying the durability marker, then server SIGKILLed — finals=1 markerInFinal=true
 PASS  T2 (new process, same DB) delivers a final — finals=1
 PASS  T2 provider request REPLAYS the marker from durable storage — providerCalls=1 replaysMarker=true
