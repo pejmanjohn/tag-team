@@ -19,6 +19,7 @@ export interface EffectiveSlackConfig {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  channelLabel?: string;
   channelPromptAddendum?: string;
   agent: CustomAgentConfig;
   model: string;
@@ -65,6 +66,7 @@ export function resolveEffectiveSlackConfig(
     workspaceId: assignment.workspaceId,
     channelId: assignment.channelId,
     agentId: assignment.agentId,
+    ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
       : {}),

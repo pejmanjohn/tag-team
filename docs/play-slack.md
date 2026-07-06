@@ -96,7 +96,14 @@ The server exposes:
 
 After verifying the request signature, the Slack channel returns a fast HTTP acknowledgement and then runs the turn (context hydration, agent prompt, final delivery) as detached work, so Slack is acknowledged before the reply is produced.
 
-## 4. Expose it to Slack
+## 4. Get Slack events to the local server
+
+Two options. Option A is what production HTTP delivery looks like and is the
+one to use for anything you want to claim as verified end-to-end behavior;
+Option B is a development convenience when a public tunnel is unavailable or
+unwanted.
+
+### Option A — public tunnel (matches production delivery)
 
 Use a tunnel, for example:
 
@@ -111,6 +118,42 @@ https://<your-tunnel-host>/channels/slack/events
 ```
 
 Slack should verify the URL challenge.
+
+### Option B — Socket Mode bridge (dev only, no tunnel)
+
+`scripts/slack-socket-bridge.mjs` opens a Socket Mode WebSocket to Slack,
+receives the same Events API envelopes, re-signs each one with the signing
+secret exactly as Slack's HTTP delivery would, and POSTs it to the local
+server — which verifies the v0 signature and cannot tell the difference.
+
+Setup (one-time, in the Slack app console — pause for operator confirmation):
+
+1. **Socket Mode → Enable Socket Mode.** While enabled, Slack delivers events
+   over the socket INSTEAD of the HTTP Request URL — flip it back off to
+   return to tunnel/production delivery.
+2. **Basic Information → App-Level Tokens → Generate** a token with the
+   `connections:write` scope. Export it as `SLACK_APP_TOKEN` (an `xapp-`
+   token; keep it in an ignored local env file, never committed).
+
+Run it next to the server (reads `.env.slack.local` by default; shell values
+win; pass `--env <path>` for another file; `PORT` selects the local target):
+
+```bash
+npm run slack:bridge          # or: node scripts/slack-socket-bridge.mjs --env .env.slack.local
+```
+
+Expect `bridge: connected, forwarding events to http://127.0.0.1:<port>/...`,
+then one `bridge: forwarded event=… -> HTTP 200` line per event.
+
+Known limits (why this is dev-only):
+
+- One Socket Mode consumer at a time — a second bridge or another socket
+  client steals events from the first.
+- The bridge acks every envelope immediately, so Slack-side retry semantics
+  are NOT exercised — test duplicate-retry behavior over HTTP (Option A) or
+  with the offline verify scripts.
+- `url_verification` challenges never happen over the socket, so the Request
+  URL stays unverified until you use Option A.
 
 Subscribe to bot event:
 
@@ -144,7 +187,8 @@ Expected behavior:
 - fallback final threaded reply when status or streaming is unavailable;
 - fallback final replies use Slack `markdown` blocks, so standard Markdown like `**bold**`, links, lists, blockquotes, tables, and fenced code should render instead of appearing literally;
 - every final reply carries a footer with the profile name, resolved model label, and a `Configure` link when `SLACK_FLUE_PUBLIC_URL` is set;
-- duplicate Slack retries are acknowledged without duplicate posts.
+- duplicate Slack retries are acknowledged without duplicate posts;
+- a mention in a channel with NO enabled assignment stays fail-closed — the channel gets nothing — but the mentioner alone receives one ephemeral hint (rate-limited per channel) linking to that channel's `/admin` page; set `SLACK_FLUE_UNASSIGNED_HINT=false` to disable the hint entirely.
 
 Response defaults in this slice:
 
@@ -161,6 +205,7 @@ Context defaults:
 - First-time mentions into an existing Slack thread use the same bounded thread read.
 - Explicit top-level channel mentions fetch bounded same-channel history with `conversations.history`: `latest` is the mention timestamp, `limit` is 50, and `oldest` comes from a clear prompt window such as `today`, `yesterday`, `this week`, `last week`, `since Monday`, or `last 2 days`. If the prompt is vague, such as `what do you think?`, V1 uses the previous 24 hours.
 - Mention-free channel-thread replies and ignored top-level non-mentions do not fetch broad channel history with `conversations.history`.
+- The `lookup_channel_brief` tool returns the assigned channel's configured brief, composed from what `/admin` actually holds for it: the channel name, the assigned profile (name and description), and the channel instructions. The curated `T_DEMO` briefs in `src/config/seed.ts` remain as an extra leading layer for the offline fixtures only.
 
 For a formatting smoke, mention the bot with a prompt like:
 

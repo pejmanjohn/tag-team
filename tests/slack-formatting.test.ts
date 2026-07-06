@@ -6,6 +6,7 @@ import {
   buildSlackAdminUrl,
   renderChannelOnboarding,
   renderSlackReplyFooterBlock,
+  renderUnassignedChannelHint,
   markdownFallbackText,
   renderSlackMessage,
   slackMarkdownBlockTextLimit,
@@ -164,6 +165,25 @@ test('channel onboarding discloses mention-only, bounded context, no monitoring,
   assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_ENG\|Configure> this channel's profile/);
 
   const unlinked = renderChannelOnboarding({ botUserId: 'U_BOT', channelId: 'C_ENG', publicUrl: undefined });
+  assert.match(unlinked, /(^|\s)Configure this channel's profile/);
+  assert.doesNotMatch(unlinked, /\|Configure>/);
+});
+
+test('unassigned-channel hint names the bot, explains the silence, and links Configure', () => {
+  const linked = renderUnassignedChannelHint({
+    botUserId: 'U_BOT',
+    channelId: 'C_NEW',
+    publicUrl: 'https://demo.example',
+  });
+  assert.match(linked, /No profile is assigned to this channel yet/);
+  assert.match(linked, /<@U_BOT> cannot reply here\./);
+  assert.match(linked, /<https:\/\/demo\.example\/admin\?channel=C_NEW\|Configure> this channel's profile/);
+
+  const unlinked = renderUnassignedChannelHint({
+    botUserId: 'U_BOT',
+    channelId: 'C_NEW',
+    publicUrl: undefined,
+  });
   assert.match(unlinked, /(^|\s)Configure this channel's profile/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
 });

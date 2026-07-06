@@ -120,6 +120,7 @@ export function resolveAssignment(
     workspaceId,
     channelId,
     agentId: agent.id,
+    ...(assignment.channelLabel ? { channelLabel: assignment.channelLabel } : {}),
     ...(assignment.channelPromptAddendum
       ? { channelPromptAddendum: assignment.channelPromptAddendum }
       : {}),

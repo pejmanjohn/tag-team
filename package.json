@@ -18,7 +18,8 @@
     "flue:build": "flue build --target node",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
-    "verify:oss-export": "node scripts/verify-oss-export.mjs"
+    "verify:oss-export": "node scripts/verify-oss-export.mjs",
+    "slack:bridge": "node scripts/slack-socket-bridge.mjs"
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.8",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@flue/cli": "1.0.0-beta.8",
+    "@slack/socket-mode": "^2.0.7",
     "@types/node": "26.0.0",
     "tsx": "^4.22.4",
     "typescript": "6.0.3",

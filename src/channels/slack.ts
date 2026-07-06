@@ -3,7 +3,7 @@ import { createSlackChannel } from '@flue/slack';
 import { WebClient } from '@slack/web-api';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
-import { ModelResolutionError } from '../config/errors.ts';
+import { ModelResolutionError, NoAssignmentError } from '../config/errors.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { resolveAssignment, type AssignmentSurface } from '../config/resolver.ts';
 import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
@@ -16,7 +16,10 @@ import {
   type SlackThreadRegistry,
 } from '../slack/claim-store.ts';
 import { INTERNAL_AGENT_TOKEN, INTERNAL_AGENT_TOKEN_HEADER } from '../slack/internal-auth.ts';
-import { renderChannelOnboarding } from '../slack/message-format.ts';
+import {
+  renderChannelOnboarding,
+  renderUnassignedChannelHint,
+} from '../slack/message-format.ts';
 import type { SlackStatusUpdate } from '../slack/replies.ts';
 import { registerSlackStatusTurn } from '../slack/status-registry.ts';
 import { slackThreadKey } from '../slack/thread-key.ts';
@@ -199,6 +202,14 @@ export const channel = createSlackChannel({
         state.release(evtKey);
         state.release(msgKey);
         console.error('[slack-flue] no assignment for turn:', sanitizeError(err));
+        // Fail-closed with feedback: the channel stays silent, but the person
+        // who explicitly mentioned the bot gets an ephemeral pointer at /admin.
+        // Detached so the events ack is not delayed by the Slack Web API call.
+        if (err instanceof NoAssignmentError) {
+          void postUnassignedChannelHint(turn, surface, state).catch((hintErr) => {
+            console.error('[slack-flue] unassigned-channel hint failed:', sanitizeError(hintErr));
+          });
+        }
         return;
       }
     }
@@ -417,9 +428,70 @@ function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
 
 // Direct messages / App Home are on by default; SLACK_FLUE_ALLOW_DMS=false (or
 // 0/off/no) turns them off so the bot is reachable only in channels.
-function directMessagesEnabled(): boolean {
-  const raw = process.env.SLACK_FLUE_ALLOW_DMS?.trim().toLowerCase();
+function envFlagDefaultOn(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
   return !(raw === 'false' || raw === '0' || raw === 'off' || raw === 'no');
+}
+
+function directMessagesEnabled(): boolean {
+  return envFlagDefaultOn('SLACK_FLUE_ALLOW_DMS');
+}
+
+function unassignedChannelHintEnabled(): boolean {
+  return envFlagDefaultOn('SLACK_FLUE_UNASSIGNED_HINT');
+}
+
+// Fail-closed feedback: an EXPLICIT mention in a channel with no enabled
+// assignment posts an ephemeral hint to the mentioner only — the channel gets
+// nothing and ambient messages get nothing. A claim on the channel rate-limits
+// the hint to one per claim-TTL window; a FAILED post releases the claim (it
+// delivered nothing, so a later mention re-hinting cannot double-post). The
+// whole body is fenced: this runs detached and must never throw into the
+// events route, even if the claim store itself errors.
+async function postUnassignedChannelHint(
+  turn: NormalizedSlackTurn,
+  surface: AssignmentSurface,
+  state: SlackClaimStore,
+): Promise<void> {
+  try {
+    if (surface !== 'channel' || turn.source !== 'app_mention') {
+      return;
+    }
+    // A 'G…' id is ambiguous (legacy private channel vs group DM) and is only
+    // classified as a channel to stay fail-closed for turns. The hint must not
+    // treat it as a configurable channel — /admin?channel=G… would point at a
+    // group DM — so hint only for unambiguous 'C…' channel ids.
+    if (!turn.channelId.startsWith('C')) {
+      return;
+    }
+    if (!unassignedChannelHintEnabled()) {
+      return;
+    }
+    const botUserId = await resolveBotUserId();
+    if (!botUserId) {
+      return;
+    }
+    const hintKey = `hint:${turn.workspaceId}:${turn.channelId}`;
+    if (!state.claim(hintKey)) {
+      return;
+    }
+    try {
+      await getClient().chat.postEphemeral({
+        channel: turn.channelId,
+        user: turn.userId,
+        text: renderUnassignedChannelHint({
+          botUserId,
+          channelId: turn.channelId,
+          publicUrl: process.env.SLACK_FLUE_PUBLIC_URL,
+        }),
+      });
+    } catch (err) {
+      state.release(hintKey);
+      throw err;
+    }
+  } catch (err) {
+    console.error('[slack-flue] unassigned-channel hint failed:', sanitizeError(err));
+  }
 }
 
 function readingThreadStatus(): SlackStatusUpdate {

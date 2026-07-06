@@ -82,6 +82,7 @@ export function snapshotFromEffectiveConfig(
     workspaceId: config.workspaceId,
     channelId: config.channelId,
     agentId: config.agentId,
+    ...(config.channelLabel ? { channelLabel: config.channelLabel } : {}),
     ...(config.channelPromptAddendum
       ? { channelPromptAddendum: config.channelPromptAddendum }
       : {}),

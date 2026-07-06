@@ -28,6 +28,7 @@ export interface ResolvedAssignment {
   workspaceId: string;
   channelId: string;
   agentId: string;
+  channelLabel?: string;
   channelPromptAddendum?: string;
   agent: CustomAgentConfig;
   // Optional pre-resolved model label. Set only when the assignment is served

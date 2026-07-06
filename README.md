@@ -70,6 +70,8 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
 | `SLACK_FLUE_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
 | `SLACK_FLUE_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
+| `SLACK_FLUE_ALLOW_DMS` | optional | Direct messages are on by default; `false` makes the bot reachable only in channels. |
+| `SLACK_FLUE_UNASSIGNED_HINT` | optional | On by default: a mention in a channel with no enabled assignment posts one ephemeral hint (rate-limited per channel) to the mentioner linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
 | `FLUE_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
 | `FLUE_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
 | `FLUE_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `FLUE_AGENT_API_TOKEN`. |
@@ -81,15 +83,19 @@ are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
 
 `.env.example` lists the offline-safe defaults.
 
-Seeded demo profiles:
+Seeded starter profiles (no channel assignments — a fresh install's `/admin`
+shows only your real channels):
 
-- `Release Scribe` (`agent_release_scribe`) is assigned to `T_DEMO/C_ENG`; it leads with a summary table and includes a fenced code/diff snippet for engineering demos.
-- `Exec Brief` (`agent_exec_brief`) is assigned to `T_DEMO/C_EXEC`; it uses bold-led bullets, closes with `Next steps`, and avoids code. It is also the `*/*` **direct-message default** — the profile that answers DMs and App Home.
+- `Release Scribe` (`agent_release_scribe`) leads with a summary table and includes a fenced code/diff snippet for engineering updates.
+- `Exec Brief` (`agent_exec_brief`) uses bold-led bullets, closes with `Next steps`, and avoids code. It is the `*/*` **direct-message default** — the profile that answers DMs and App Home.
 
 Channels are **fail-closed**: the bot answers in a channel only where a profile
 is explicitly assigned (the `*/*` wildcard is the DM default and does not apply
 to channels), so a fresh install never replies in a channel it was merely
-invited to. A Slack thread freezes the resolved profile, model, tools, and
+invited to. When someone explicitly mentions the bot in an unassigned channel,
+the channel still gets nothing — only the mentioner receives a single ephemeral
+hint pointing at that channel's `/admin` page (`SLACK_FLUE_UNASSIGNED_HINT=false`
+turns this off). A Slack thread freezes the resolved profile, model, tools, and
 instructions at its first durable turn; existing threads keep the config they
 started with, while admin edits apply only to new threads. This write-once
 snapshot also keeps later execution retries from re-reading a changed profile
@@ -141,6 +147,11 @@ node scripts/verify-providers.mjs
 
 Each spawns the real app against a fake Slack/provider backend and asserts zero
 external network traffic (`scripts/net-guard.mjs`).
+
+For live testing against real Slack without a public tunnel, `npm run
+slack:bridge` forwards Socket Mode events to the local server with genuine v0
+signatures — dev-only; see "Option B — Socket Mode bridge" in
+`docs/play-slack.md`.
 
 Live Slack app identity check:
 

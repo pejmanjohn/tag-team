@@ -143,6 +143,22 @@ export function renderChannelOnboarding(params: {
   ].join(' ');
 }
 
+// The ephemeral nudge for an explicit mention in a channel that has no enabled
+// assignment. Fail-closed stays intact — the channel itself gets nothing — but
+// the person who mentioned the bot learns why it stayed silent, visible only
+// to them.
+export function renderUnassignedChannelHint(params: {
+  botUserId: string;
+  channelId: string;
+  publicUrl: string | undefined;
+}): string {
+  const configure = renderSlackConfigureLink(params.publicUrl, { channelId: params.channelId });
+  return [
+    `No profile is assigned to this channel yet, so <@${params.botUserId}> cannot reply here.`,
+    `${configure} this channel's profile in /admin.`,
+  ].join(' ');
+}
+
 export function buildSlackAdminUrl(
   publicUrl: string | undefined,
   params: SlackAdminUrlParams = {},

@@ -1240,6 +1240,65 @@ export const scenarios: Scenario[] = [
       });
     },
   },
+  {
+    id: 'S38',
+    title: 'mention in an unassigned channel stays fail-closed but hints the mentioner ephemerally',
+    // No configSeed: C_EXEC is deliberately unassigned so the turn drops at
+    // fail-closed resolution — the hint is the ONLY thing allowed to escape.
+    config: {},
+    async run(instance) {
+      const first = await instance.postEvent(appMention({ event_id: 'Ev_S38_T1' }));
+      assert.equal(first.status, 200);
+      await instance.quiesce();
+
+      // Fail-closed intact: nothing channel-visible, no provider traffic.
+      assert.equal(instance.backend.finals().length, 0);
+      assert.equal(instance.backend.providerCalls().length, 0);
+      assert.equal(instance.backend.callsOfMethod('chat.postMessage').length, 0);
+
+      // Exactly one ephemeral hint, to the mentioner, in the mentioned channel.
+      const hints = instance.backend.callsOfMethod('chat.postEphemeral');
+      assert.equal(hints.length, 1);
+      const [hint] = hints;
+      assert.equal(hint?.body.channel, 'C_EXEC');
+      assert.equal(hint?.body.user, 'U_ALICE');
+      assert.ok(String(hint?.body.text).includes('No profile is assigned'));
+      assert.ok(String(hint?.body.text).includes('Configure'));
+
+      // Rate-limited: a repeat mention inside the claim-TTL window adds none.
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S38_T2',
+          event: { ts: '1782771900.000100', event_ts: '1782771900.000100' },
+        }),
+      );
+      await instance.quiesce();
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+
+      // Ambient (non-mention) traffic in an unassigned channel never hints —
+      // only an explicit mention signals intent to talk to the bot.
+      await instance.postEvent(
+        topLevelChannelMessage({
+          event_id: 'Ev_S38_T3',
+          event: { channel: 'C_UNASSIGNED_OTHER', ts: '1782771901.000100', event_ts: '1782771901.000100' },
+        }),
+      );
+      await instance.quiesce();
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+
+      // A mention in an ambiguous 'G…' conversation (legacy private channel vs
+      // group DM) is fail-closed like a channel but must NOT hint: /admin
+      // cannot meaningfully configure a group DM.
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S38_T4',
+          event: { channel: 'G_GROUP_DM', ts: '1782771902.000100', event_ts: '1782771902.000100' },
+        }),
+      );
+      await instance.quiesce();
+      assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+    },
+  },
 ];
 
 function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
