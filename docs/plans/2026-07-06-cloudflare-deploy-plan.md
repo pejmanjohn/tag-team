@@ -86,6 +86,18 @@ account.)
 > Slack-connection wizard, and the dual-target builds with the
 > `verify-cf-smoke` gate). The table is preserved as the original audit;
 > "currently" claims describe the pre-port state.
+>
+> **Deploy-button test (2026-07-07): PASS.** Live click-through against the
+> public repo (worker renamed `tag-team-button-test`, then deleted; clone repo
+> flipped private). Verified: setup page prompts from `.dev.vars.example` with
+> the `package.json` `cloudflare.bindings` description; build detected node
+> 22.19.0 from `.nvmrc`; `npm run build` ran the db.ts park/restore script;
+> `wrangler deploy` used the `.wrangler/deploy/config.json` redirect
+> (58s clone→deploy); deployed worker served the 401 token form, DO-seeded
+> profiles, and the wizard with the worker's own `request_url` substituted.
+> One fix landed from the test: the button treats EVERY key in
+> `.dev.vars.example` as a required prompt, so the optional
+> `ANTHROPIC_API_KEY` line became comment-only (d9a6655).
 
 The scratch build proved `flue build --target cloudflare` succeeds once
 `src/db.ts` is out of the source root and `agents@^0.14.2` is added: it emits
