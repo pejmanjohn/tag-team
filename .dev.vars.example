@@ -9,5 +9,8 @@ TAG_ADMIN_TOKEN="replace-with-a-random-hex-string"
 
 # Optional: unlock the Anthropic catalog provider for a smarter default model.
 # Without it, the seeded profiles run keyless on the Workers AI binding
-# (@cf/zai-org/glm-5.2).
-ANTHROPIC_API_KEY=""
+# (@cf/zai-org/glm-5.2). Deliberately NOT an active line: the Deploy to
+# Cloudflare button renders every key in this file as a REQUIRED prompt
+# (verified live 2026-07-07), and this one must stay optional. Set it after
+# deploy instead:
+#   npx wrangler secret put ANTHROPIC_API_KEY
