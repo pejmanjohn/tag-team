@@ -1,10 +1,9 @@
-import { DatabaseSync, type StatementSync } from 'node:sqlite';
-
-import { openStateDb, resolveStateDbPath } from '../slack/claim-store.ts';
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
+import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import type { StateDb } from '../state/state-db.ts';
 
 export interface ConfigSeed {
   agents: readonly CustomAgentConfig[];
@@ -18,16 +17,6 @@ const DEFAULT_SEED: ConfigSeed = {
 
 const SEED_META_KEY = 'config_seeded_v1';
 const SCHEMA_VERSION_KEY = 'schema_version';
-type AgentStatementValues = [
-  string,
-  string,
-  string,
-  string,
-  number,
-  string | null,
-  string,
-  string,
-];
 
 interface AgentRow {
   id: string;
@@ -49,17 +38,59 @@ interface AssignmentRow {
   channel_prompt_addendum: string | null;
 }
 
-export class SqliteConfigStore {
-  private readonly db: DatabaseSync;
+/** PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin. */
+export type ConfigAgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & {
+  model?: string | null;
+};
 
-  constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
-    this.db = openStateDb(path);
-    this.db.exec(
+/**
+ * Public async config store — the interface every consumer (routes, channel,
+ * agent) is written against. The Node backend answers from local SQLite (the
+ * awaits resolve immediately); the Cloudflare backend proxies each call to a
+ * Durable Object over RPC. Domain errors (UnknownAgentError & co.) are part of
+ * the contract on both backends.
+ */
+export interface ConfigStore {
+  listAgents(): Promise<CustomAgentConfig[]>;
+  getAgent(agentId: string): Promise<CustomAgentConfig>;
+  createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
+  updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig>;
+  deleteAgent(agentId: string): Promise<boolean>;
+  listAssignments(): Promise<ChannelAssignment[]>;
+  getAssignment(workspaceId: string, channelId: string): Promise<ChannelAssignment | undefined>;
+  listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]>;
+  putAssignment(assignment: ChannelAssignment): Promise<ChannelAssignment>;
+  deleteAssignment(workspaceId: string, channelId: string): Promise<boolean>;
+  find(
+    workspaceId: string,
+    channelId: string,
+    options?: AssignmentLookupOptions,
+  ): Promise<ChannelAssignment | undefined>;
+  /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
+  close?(): void;
+}
+
+/**
+ * Target-neutral config store logic over the StateDb mini-interface: the
+ * single source of the schema, migrations, seeding, and every query. The Node
+ * backend runs it over `node:sqlite`; the Cloudflare Durable Object runs the
+ * same class over `ctx.storage.sql`. Methods are synchronous — both backends
+ * execute SQL synchronously — and the async public interface wraps them.
+ */
+export class ConfigStoreLogic {
+  constructor(
+    private readonly db: StateDb,
+    seed: ConfigSeed = DEFAULT_SEED,
+  ) {
+    // One statement per exec: DO SQLite rejects multi-statement strings.
+    db.exec(
       `CREATE TABLE IF NOT EXISTS config_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS config_agents (
+      )`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS config_agents (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         description TEXT NOT NULL,
@@ -68,8 +99,10 @@ export class SqliteConfigStore {
         model TEXT,
         default_models_json TEXT NOT NULL,
         allowed_tools_json TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS config_assignments (
+      )`,
+    );
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS config_assignments (
         workspace_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
@@ -77,25 +110,20 @@ export class SqliteConfigStore {
         channel_label TEXT,
         channel_prompt_addendum TEXT,
         PRIMARY KEY (workspace_id, channel_id)
-      );`,
+      )`,
     );
     this.runMigrations();
     this.seedOnce(seed);
   }
 
-  close(): void {
-    this.db.close();
-  }
-
   listAgents(): CustomAgentConfig[] {
     return this.db
-      .prepare('SELECT * FROM config_agents ORDER BY id')
-      .all()
+      .all('SELECT * FROM config_agents ORDER BY id')
       .map((row) => rowToAgent(row as unknown as AgentRow));
   }
 
   getAgent(agentId: string): CustomAgentConfig {
-    const row = this.db.prepare('SELECT * FROM config_agents WHERE id = ?').get(agentId);
+    const row = this.db.get('SELECT * FROM config_agents WHERE id = ?', agentId);
     if (!row) {
       throw new UnknownAgentError(agentId);
     }
@@ -105,7 +133,7 @@ export class SqliteConfigStore {
   createAgent(agent: CustomAgentConfig): CustomAgentConfig {
     let inserted;
     try {
-      inserted = this.agentInsertStatement().run(...agentStatementValues(agent));
+      inserted = this.insertAgent(agent);
     } catch (err) {
       if (isConstraintViolation(err)) {
         throw new AgentExistsError(agent.id);
@@ -118,32 +146,24 @@ export class SqliteConfigStore {
     return this.getAgent(agent.id);
   }
 
-  updateAgent(
-    agentId: string,
-    // `model: null` clears a pinned model (PATCH semantics); omitting it keeps
-    // the current pin.
-    patch: Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null },
-  ): CustomAgentConfig {
+  updateAgent(agentId: string, patch: ConfigAgentPatch): CustomAgentConfig {
     const current = this.getAgent(agentId);
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
     const next = { ...current, ...patch, id: agentId };
-    this.db
-      .prepare(
-        `UPDATE config_agents
-         SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
-             default_models_json = ?, allowed_tools_json = ?
-         WHERE id = ?`,
-      )
-      .run(
-        next.name,
-        next.description,
-        next.instructions,
-        next.enabled ? 1 : 0,
-        model,
-        JSON.stringify(next.defaultModels),
-        JSON.stringify(next.allowedTools),
-        agentId,
-      );
+    this.db.run(
+      `UPDATE config_agents
+       SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
+           default_models_json = ?, allowed_tools_json = ?
+       WHERE id = ?`,
+      next.name,
+      next.description,
+      next.instructions,
+      next.enabled ? 1 : 0,
+      model,
+      JSON.stringify(next.defaultModels),
+      JSON.stringify(next.allowedTools),
+      agentId,
+    );
     return this.getAgent(agentId);
   }
 
@@ -155,63 +175,63 @@ export class SqliteConfigStore {
         .join(', ');
       throw new AgentStillAssignedError(agentId, keys);
     }
-    const deleted = this.db.prepare('DELETE FROM config_agents WHERE id = ?').run(agentId);
+    const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
     return deleted.changes === 1;
   }
 
   listAssignments(): ChannelAssignment[] {
     return this.db
-      .prepare('SELECT * FROM config_assignments ORDER BY workspace_id, channel_id')
-      .all()
+      .all('SELECT * FROM config_assignments ORDER BY workspace_id, channel_id')
       .map((row) => rowToAssignment(row as unknown as AssignmentRow));
   }
 
   getAssignment(workspaceId: string, channelId: string): ChannelAssignment | undefined {
-    const row = this.db
-      .prepare('SELECT * FROM config_assignments WHERE workspace_id = ? AND channel_id = ?')
-      .get(workspaceId, channelId);
+    const row = this.db.get(
+      'SELECT * FROM config_assignments WHERE workspace_id = ? AND channel_id = ?',
+      workspaceId,
+      channelId,
+    );
     return row ? rowToAssignment(row as unknown as AssignmentRow) : undefined;
   }
 
   listAssignmentsForAgent(agentId: string): ChannelAssignment[] {
     return this.db
-      .prepare(
+      .all(
         `SELECT * FROM config_assignments
          WHERE agent_id = ?
          ORDER BY workspace_id, channel_id`,
+        agentId,
       )
-      .all(agentId)
       .map((row) => rowToAssignment(row as unknown as AssignmentRow));
   }
 
   putAssignment(assignment: ChannelAssignment): ChannelAssignment {
     this.getAgent(assignment.agentId);
-    this.db
-      .prepare(
-        `INSERT INTO config_assignments (
-          workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
-          agent_id = excluded.agent_id,
-          enabled = excluded.enabled,
-          channel_label = excluded.channel_label,
-          channel_prompt_addendum = excluded.channel_prompt_addendum`,
-      )
-      .run(
-        assignment.workspaceId,
-        assignment.channelId,
-        assignment.agentId,
-        assignment.enabled ? 1 : 0,
-        assignment.channelLabel ?? null,
-        assignment.channelPromptAddendum ?? null,
-      );
+    this.db.run(
+      `INSERT INTO config_assignments (
+        workspace_id, channel_id, agent_id, enabled, channel_label, channel_prompt_addendum
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(workspace_id, channel_id) DO UPDATE SET
+        agent_id = excluded.agent_id,
+        enabled = excluded.enabled,
+        channel_label = excluded.channel_label,
+        channel_prompt_addendum = excluded.channel_prompt_addendum`,
+      assignment.workspaceId,
+      assignment.channelId,
+      assignment.agentId,
+      assignment.enabled ? 1 : 0,
+      assignment.channelLabel ?? null,
+      assignment.channelPromptAddendum ?? null,
+    );
     return this.getAssignment(assignment.workspaceId, assignment.channelId) as ChannelAssignment;
   }
 
   deleteAssignment(workspaceId: string, channelId: string): boolean {
-    const deleted = this.db
-      .prepare('DELETE FROM config_assignments WHERE workspace_id = ? AND channel_id = ?')
-      .run(workspaceId, channelId);
+    const deleted = this.db.run(
+      'DELETE FROM config_assignments WHERE workspace_id = ? AND channel_id = ?',
+      workspaceId,
+      channelId,
+    );
     return deleted.changes === 1;
   }
 
@@ -231,63 +251,69 @@ export class SqliteConfigStore {
     options: AssignmentLookupOptions = {},
   ): ChannelAssignment | undefined {
     const excludeGlobalWildcard = (options.surface ?? 'direct') === 'channel';
-    const row = this.db
-      .prepare(
-        `SELECT * FROM config_assignments
-         WHERE (workspace_id = ? OR workspace_id = '*')
-           AND (channel_id = ? OR channel_id = '*')
-           ${excludeGlobalWildcard ? "AND NOT (workspace_id = '*' AND channel_id = '*')" : ''}
-         ORDER BY CASE
-           WHEN workspace_id = ? AND channel_id = ? THEN 0
-           WHEN workspace_id = ? AND channel_id = '*' THEN 1
-           WHEN workspace_id = '*' AND channel_id = ? THEN 2
-           ELSE 3
-         END
-         LIMIT 1`,
-      )
-      .get(workspaceId, channelId, workspaceId, channelId, workspaceId, channelId);
+    const row = this.db.get(
+      `SELECT * FROM config_assignments
+       WHERE (workspace_id = ? OR workspace_id = '*')
+         AND (channel_id = ? OR channel_id = '*')
+         ${excludeGlobalWildcard ? "AND NOT (workspace_id = '*' AND channel_id = '*')" : ''}
+       ORDER BY CASE
+         WHEN workspace_id = ? AND channel_id = ? THEN 0
+         WHEN workspace_id = ? AND channel_id = '*' THEN 1
+         WHEN workspace_id = '*' AND channel_id = ? THEN 2
+         ELSE 3
+       END
+       LIMIT 1`,
+      workspaceId,
+      channelId,
+      workspaceId,
+      channelId,
+      workspaceId,
+      channelId,
+    );
     if (!row) return undefined;
     const assignment = rowToAssignment(row as unknown as AssignmentRow);
     return assignment.enabled ? assignment : undefined;
   }
 
   private seedOnce(seed: ConfigSeed): void {
-    const seeded = this.db
-      .prepare('SELECT value FROM config_meta WHERE key = ?')
-      .get(SEED_META_KEY);
+    const seeded = this.db.get('SELECT value FROM config_meta WHERE key = ?', SEED_META_KEY);
     if (seeded) return;
 
     // Seed rows and the seeded marker commit atomically: a crash mid-seed must
     // not leave a half-seeded DB that the marker then stamps as complete.
-    this.db.exec('BEGIN IMMEDIATE;');
-    try {
+    this.db.transaction(() => {
       const agentCount = countRows(this.db, 'config_agents');
       const assignmentCount = countRows(this.db, 'config_assignments');
       if (agentCount === 0 && assignmentCount === 0) {
-        const insertAgent = this.agentInsertStatement();
         for (const agent of seed.agents) {
-          insertAgent.run(...agentStatementValues(agent));
+          this.insertAgent(agent);
         }
         for (const assignment of seed.assignments) {
           this.putAssignment(assignment);
         }
       }
-      this.db
-        .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-        .run(SEED_META_KEY, new Date().toISOString());
-      this.db.exec('COMMIT;');
-    } catch (err) {
-      this.db.exec('ROLLBACK;');
-      throw err;
-    }
+      this.db.run(
+        'INSERT INTO config_meta (key, value) VALUES (?, ?)',
+        SEED_META_KEY,
+        new Date().toISOString(),
+      );
+    });
   }
 
-  private agentInsertStatement(): StatementSync {
-    return this.db.prepare(
+  private insertAgent(agent: CustomAgentConfig): { changes: number } {
+    return this.db.run(
       `INSERT INTO config_agents (
         id, name, description, instructions, enabled, model,
         default_models_json, allowed_tools_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      agent.id,
+      agent.name,
+      agent.description,
+      agent.instructions,
+      agent.enabled ? 1 : 0,
+      agent.model ?? null,
+      JSON.stringify(agent.defaultModels),
+      JSON.stringify(agent.allowedTools),
     );
   }
 
@@ -296,22 +322,22 @@ export class SqliteConfigStore {
   // columns append a numbered step here instead of growing bespoke
   // ensure-column methods.
   private runMigrations(): void {
-    const MIGRATIONS: Array<{ version: number; up: (db: DatabaseSync) => void }> = [
+    const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
         version: 1,
         up: (db) => {
-          const columns = db
-            .prepare('PRAGMA table_info(config_assignments)')
-            .all() as Array<{ name: string }>;
+          const columns = db.all('PRAGMA table_info(config_assignments)') as Array<{
+            name: string;
+          }>;
           if (!columns.some((column) => column.name === 'channel_label')) {
-            db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT;');
+            db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT');
           }
         },
       },
     ];
-    const row = this.db
-      .prepare('SELECT value FROM config_meta WHERE key = ?')
-      .get(SCHEMA_VERSION_KEY) as { value: string } | undefined;
+    const row = this.db.get('SELECT value FROM config_meta WHERE key = ?', SCHEMA_VERSION_KEY) as
+      | { value: string }
+      | undefined;
     const applied = row ? Number(row.value) : 0;
     for (const migration of MIGRATIONS) {
       if (migration.version > applied) {
@@ -320,12 +346,83 @@ export class SqliteConfigStore {
     }
     const latest = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
     if (latest > applied) {
-      this.db
-        .prepare(
-          'INSERT INTO config_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        )
-        .run(SCHEMA_VERSION_KEY, String(latest));
+      this.db.run(
+        'INSERT INTO config_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        SCHEMA_VERSION_KEY,
+        String(latest),
+      );
     }
+  }
+}
+
+/**
+ * Node backend: the target-neutral logic over a file-backed (or `:memory:`)
+ * `node:sqlite` database, wrapped in the async public interface. Schema,
+ * migrations, and seeding run synchronously in the constructor — a constructed
+ * store is fully initialized, exactly as before the async refactor.
+ */
+export class SqliteConfigStore implements ConfigStore {
+  private readonly db: NodeStateDb;
+  private readonly logic: ConfigStoreLogic;
+
+  constructor(path: string = resolveStateDbPath(), seed: ConfigSeed = DEFAULT_SEED) {
+    this.db = openStateDb(path);
+    this.logic = new ConfigStoreLogic(this.db, seed);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  async listAgents(): Promise<CustomAgentConfig[]> {
+    return this.logic.listAgents();
+  }
+
+  async getAgent(agentId: string): Promise<CustomAgentConfig> {
+    return this.logic.getAgent(agentId);
+  }
+
+  async createAgent(agent: CustomAgentConfig): Promise<CustomAgentConfig> {
+    return this.logic.createAgent(agent);
+  }
+
+  async updateAgent(agentId: string, patch: ConfigAgentPatch): Promise<CustomAgentConfig> {
+    return this.logic.updateAgent(agentId, patch);
+  }
+
+  async deleteAgent(agentId: string): Promise<boolean> {
+    return this.logic.deleteAgent(agentId);
+  }
+
+  async listAssignments(): Promise<ChannelAssignment[]> {
+    return this.logic.listAssignments();
+  }
+
+  async getAssignment(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<ChannelAssignment | undefined> {
+    return this.logic.getAssignment(workspaceId, channelId);
+  }
+
+  async listAssignmentsForAgent(agentId: string): Promise<ChannelAssignment[]> {
+    return this.logic.listAssignmentsForAgent(agentId);
+  }
+
+  async putAssignment(assignment: ChannelAssignment): Promise<ChannelAssignment> {
+    return this.logic.putAssignment(assignment);
+  }
+
+  async deleteAssignment(workspaceId: string, channelId: string): Promise<boolean> {
+    return this.logic.deleteAssignment(workspaceId, channelId);
+  }
+
+  async find(
+    workspaceId: string,
+    channelId: string,
+    options: AssignmentLookupOptions = {},
+  ): Promise<ChannelAssignment | undefined> {
+    return this.logic.find(workspaceId, channelId, options);
   }
 }
 
@@ -336,32 +433,6 @@ function isConstraintViolation(err: unknown): boolean {
     return (errcode & 0xff) === 19; // SQLITE_CONSTRAINT family
   }
   return err.message.includes('constraint failed'); // fallback if errcode absent
-}
-
-function agentStatementValues(agent: CustomAgentConfig): AgentStatementValues {
-  return [
-    agent.id,
-    agent.name,
-    agent.description,
-    agent.instructions,
-    agent.enabled ? 1 : 0,
-    agent.model ?? null,
-    JSON.stringify(agent.defaultModels),
-    JSON.stringify(agent.allowedTools),
-  ];
-}
-
-let cachedConfigStore: { path: string; store: SqliteConfigStore } | undefined;
-
-export function getConfigStore(): SqliteConfigStore {
-  const path = resolveStateDbPath();
-  if (cachedConfigStore?.path === path) {
-    return cachedConfigStore.store;
-  }
-  cachedConfigStore?.store.close();
-  const store = new SqliteConfigStore(path);
-  cachedConfigStore = { path, store };
-  return store;
 }
 
 function rowToAgent(row: AgentRow): CustomAgentConfig {
@@ -390,9 +461,7 @@ function rowToAssignment(row: AssignmentRow): ChannelAssignment {
   };
 }
 
-function countRows(db: DatabaseSync, table: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as
-    | { count: number }
-    | undefined;
+function countRows(db: StateDb, table: string): number {
+  const row = db.get(`SELECT COUNT(*) AS count FROM ${table}`) as { count: number } | undefined;
   return row?.count ?? 0;
 }

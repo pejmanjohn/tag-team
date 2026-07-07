@@ -15,22 +15,74 @@ The product runs entirely on the **Flue lane**. The earlier hand-rolled harness 
 been deleted; the behavior it encoded is preserved by a lane-agnostic parity suite
 (`tests/parity/`) that now runs against the real Flue app (Lane B, 31 scenarios).
 
+## Deploy on Cloudflare
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pejmanjohn/tag-team)
+
+The fastest way to run Tag Team is your own Cloudflare account:
+
+1. **Click the button.** Cloudflare clones this repo into your GitHub, provisions
+   the Durable Objects, and prompts for one secret: `TAG_ADMIN_TOKEN` (generate it
+   with `openssl rand -hex 32`).
+2. **Open `https://tag-team.<your-account>.workers.dev/admin`** and log in with
+   that token.
+3. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app
+   console with this repo's manifest, the events request URL already pointing at
+   your worker. Install the app to your workspace.
+4. **Paste back the bot token and signing secret.** The wizard validates the token
+   live (`auth.test`) and stores both in the worker's Durable Object state; env
+   secrets (`wrangler secret put`) always take precedence if you set them later.
+
+The first mention answers with **zero model keys**: on the Cloudflare target the
+default model resolves to `@cf/zai-org/glm-5.2` through the Workers AI binding.
+Add an `ANTHROPIC_API_KEY` secret to upgrade the default to Claude.
+
+Free-plan honesty: Workers AI allows ~10K Neurons/day and Durable Objects 100K row
+writes/day — both are **hard errors** once exceeded, so a busy workspace needs a
+paid plan (or an `ANTHROPIC_API_KEY`, which moves model spend off Workers AI).
+
+Manual CLI path (same artifact the button deploys):
+
+```bash
+npm run flue:build:cf                    # flue build --target cloudflare -> dist-cf/ (parks src/db.ts)
+npx wrangler deploy                      # picks up dist-cf via .wrangler/deploy/config.json
+npx wrangler secret put TAG_ADMIN_TOKEN
+```
+
+Local Cloudflare dev loop:
+
+```bash
+npm run flue:build:cf
+npx wrangler dev --config dist-cf/tag_team/wrangler.json --persist-to .wrangler-state
+```
+
+Keep `--persist-to` outside `dist-cf/` (as above): the build output is disposable
+and a rebuild would otherwise wipe your local Durable Object state. Local dev
+secrets live in a `.dev.vars` file next to the built `wrangler.json`;
+`.dev.vars.example` documents the two that matter.
+
 ## Architecture
 
 - `src/app.ts` — Flue app entry: registers providers (`cloudflare-workers-ai`,
   optional `anthropic`, optional offline `local-stub`), mounts the fail-closed
   admin API, then mounts the Flue router.
 - `src/channels/slack.ts` — Slack channel (`POST /channels/slack/events`): admission,
-  duplicate-claiming, context hydration, and the self-call that drives the agent.
+  duplicate-claiming, context hydration, and the in-process dispatch that drives the
+  agent (`src/slack/agent-dispatch.ts`).
 - `src/agents/slack-thread.ts` — durable agent (`POST /agents/slack-thread/:id`),
   gated by a shared internal token; resolves the assignment's model + tools.
 - `src/slack/` — shared, lane-agnostic Slack modules kept verbatim from the contract:
   turn normalization, thread keys, context hydration/formatting, message rendering,
-  presentation, claim store, internal auth.
-- `src/admin/routes.ts` — token-gated runtime config CRUD API under `/admin/api/*`.
+  presentation, claim store, credential resolution, internal auth.
+- `src/admin/routes.ts` — token-gated runtime config CRUD API under `/admin/api/*`,
+  including the first-run Slack-connection wizard endpoints.
 - `src/config/` — seeded agents, assignments, channel briefs, assignment resolver,
-  and the SQLite-backed runtime config store.
-- `src/db.ts` — file-backed SQLite for the durable agent transcript (Node target).
+  and the target-neutral state stores (SQLite on Node, a Durable Object on
+  Cloudflare, selected by `src/config/state-backend.ts`).
+- `src/cloudflare.ts` — the `TagStateStore` Durable Object hosting all app state on
+  the Cloudflare target (config, snapshots, claims, thread registry, settings).
+- `src/db.ts` — file-backed SQLite for the durable agent transcript (Node target;
+  parked automatically during Cloudflare builds).
 
 ## Quickstart
 
@@ -58,23 +110,24 @@ Build the deployable Node artifact:
 npm run flue:build            # -> dist/server.mjs (flue build --target node)
 ```
 
-The Node target is the deploy target. `wrangler.jsonc` and the Cloudflare build path
-are vestigial and intentionally unbuildable (a custom `src/db.ts` is Node-only).
+The app is dual-target: the Node build above, or the Cloudflare Workers build
+(`npm run flue:build:cf` → `dist-cf/`; see "Deploy on Cloudflare"). Both run the
+same source — `src/config/state-backend.ts` picks SQLite or the Durable Object
+state store at runtime.
 
 ## Environment variables
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SLACK_SIGNING_SECRET` | yes | Verifies inbound Slack request signatures. |
-| `SLACK_BOT_TOKEN` | yes | Bot token for outbound Slack Web API calls. |
-| `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
+| `SLACK_SIGNING_SECRET` | unless set via wizard | Verifies inbound Slack request signatures. Required unless configured through the `/admin` Slack-connection wizard; an env value takes precedence over the stored one. |
+| `SLACK_BOT_TOKEN` | unless set via wizard | Bot token for outbound Slack Web API calls. Required unless configured through the `/admin` Slack-connection wizard; an env value takes precedence over the stored one. |
+| `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, taken from the `/admin` wizard (stored from `auth.test`) or resolved once via `auth.test`; an explicit empty string means "no bot user id" (fail-closed for message-family events). |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
 | `SLACK_TAG_PUBLIC_URL` | optional | Public base URL for Slack-visible `/admin` Configure links in reply footers and bot-invited channel onboarding. If unset, Slack shows a `Configure` label without a link. |
 | `SLACK_TAG_MODEL` | optional | Offline/development fallback model specifier (`provider/model`) used only when the assigned agent has no explicit `model` and live provider credentials are absent. |
 | `SLACK_TAG_ALLOW_DMS` | optional | Direct messages are on by default; `false` makes the bot reachable only in channels. |
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in a channel with no enabled assignment posts one ephemeral hint (rate-limited per channel) to the mentioner linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
-| `TAG_SELF_URL` | optional | Explicit base URL for the app's self-call to its agent endpoint. Without it, only loopback origins are trusted (Slack signatures do not cover `Host`). |
-| `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id`. Random per-process if unset. |
+| `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id` for **external callers only** — the app's own agent dispatch is in-process and needs no configuration. Random per-process/per-isolate if unset (external calls then cannot authenticate). |
 | `TAG_ADMIN_TOKEN` | optional | Bearer token for `/admin/api/*`. If unset, every `/admin/*` route returns 404. This is separate from `TAG_AGENT_API_TOKEN`. |
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime agent config, channel assignments, durable dedupe claims, joined-thread registry, and per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. The default sibling state DB and SQLite sidecars are also under the ignored `tmp/**` tree. |
@@ -114,7 +167,9 @@ Model selection is per agent:
 
 1. `agent.model` from the runtime config store, when set.
 2. The agent's Anthropic default when `ANTHROPIC_API_KEY` is present.
-3. The agent's Workers AI default when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are present.
+3. The agent's Workers AI default — keyless via the Workers AI **binding** on the
+   Cloudflare target; on Node it needs `CLOUDFLARE_API_TOKEN` and
+   `CLOUDFLARE_ACCOUNT_ID` (REST provider).
 4. `SLACK_TAG_MODEL` as the offline/dev fallback.
 
 If none of those are available, agent initialization fails with an error naming
@@ -144,6 +199,7 @@ node scripts/verify-agent-config.mjs
 node scripts/verify-durability.mjs
 node scripts/verify-tool-policy.mjs
 node scripts/verify-providers.mjs
+npm run verify:cf-smoke        # Cloudflare target end-to-end under wrangler dev (workerd)
 ```
 
 Each spawns the real app against a fake Slack/provider backend and asserts zero

@@ -100,7 +100,7 @@ test('channelLabel survives the REAL production path: store -> effective config 
     ],
   });
   try {
-    const effective = resolveEffectiveSlackConfig(
+    const effective = await resolveEffectiveSlackConfig(
       'T_REAL',
       'C0LABELCHAN',
       { agents: store, assignments: store },

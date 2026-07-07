@@ -16,6 +16,10 @@
     "test:ci": "TAG_REQUIRE_LOOPBACK=1 npm test",
     "typecheck": "tsc --noEmit",
     "flue:build": "flue build --target node",
+    "flue:build:cf": "node scripts/flue-build-cf.mjs --output dist-cf",
+    "build": "npm run flue:build:cf",
+    "deploy": "wrangler deploy",
+    "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
@@ -25,6 +29,7 @@
     "@flue/runtime": "1.0.0-beta.8",
     "@flue/slack": "1.0.0-beta.1",
     "@slack/web-api": "^8.0.0-rc.1",
+    "agents": "^0.14.5",
     "hono": "^4.12.27",
     "valibot": "^1.4.2"
   },
@@ -35,5 +40,15 @@
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
     "wrangler": "4.103.0"
+  },
+  "cloudflare": {
+    "label": "Tag Team",
+    "products": ["Workers", "Durable Objects", "Workers AI"],
+    "categories": ["ai"],
+    "bindings": {
+      "TAG_ADMIN_TOKEN": {
+        "description": "Admin token gating the /admin route. Generate one with: openssl rand -hex 32"
+      }
+    }
   }
 }

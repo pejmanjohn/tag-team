@@ -9,10 +9,20 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 //
 // Prefer an operator-configured token so external callers (and multi-process
 // deployments) can be authorized deliberately. Otherwise fall back to a
-// per-process random token generated once at module scope: `flue dev` runs
-// the channel and the agent in the same process, so the self-call and the
-// route guard share this value even though no token was configured.
-export const INTERNAL_AGENT_TOKEN = process.env.TAG_AGENT_API_TOKEN ?? randomUUID();
+// random token generated once per process/isolate: the channel and the agent
+// route share this module instance, so the self-call and the route guard
+// agree even though no token was configured.
+//
+// Resolved LAZILY (first use, inside a request) rather than at module scope:
+// workerd forbids generating random values during isolate startup, so a
+// module-scope randomUUID() crashes the Cloudflare worker before it serves a
+// single request whenever TAG_AGENT_API_TOKEN is unset.
+let cachedToken: string | undefined;
+
+export function getInternalAgentToken(): string {
+  cachedToken ??= process.env.TAG_AGENT_API_TOKEN ?? randomUUID();
+  return cachedToken;
+}
 
 export const INTERNAL_AGENT_TOKEN_HEADER = 'x-flue-internal-token';
 
@@ -31,5 +41,5 @@ export function constantTimeEquals(
 
 /** Constant-time comparison against the configured/generated internal token. */
 export function isValidInternalAgentToken(candidate: string | null | undefined): boolean {
-  return constantTimeEquals(candidate, INTERNAL_AGENT_TOKEN);
+  return constantTimeEquals(candidate, getInternalAgentToken());
 }

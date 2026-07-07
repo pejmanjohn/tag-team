@@ -2,22 +2,30 @@
 // instead of matching message substrings authored in other modules (which
 // silently break on rewording).
 
+// The constructor args are kept as readonly fields so boundaries that must
+// SERIALIZE these errors (the state Durable Object's RPC envelope) can carry
+// the args and reconstruct the identical error on the other side — never by
+// parsing them back out of the message.
+
 export class UnknownAgentError extends Error {
-  constructor(agentId: string) {
+  constructor(readonly agentId: string) {
     super(`Unknown agent ${agentId}`);
     this.name = 'UnknownAgentError';
   }
 }
 
 export class AgentExistsError extends Error {
-  constructor(agentId: string) {
+  constructor(readonly agentId: string) {
     super(`Agent ${agentId} already exists`);
     this.name = 'AgentExistsError';
   }
 }
 
 export class AgentStillAssignedError extends Error {
-  constructor(agentId: string, keys: string) {
+  constructor(
+    readonly agentId: string,
+    readonly keys: string,
+  ) {
     super(`Agent ${agentId} is still assigned to ${keys}`);
     this.name = 'AgentStillAssignedError';
   }

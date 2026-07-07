@@ -4,8 +4,10 @@ import { DisabledAgentError, NoAssignmentError, UnknownAgentError } from './erro
 import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig, ResolvedAssignment } from './types.ts';
 
+// Store readers are async — the Cloudflare backend answers over Durable
+// Object RPC — and the Node SQLite stores resolve immediately.
 export interface AgentReader {
-  getAgent(agentId: string): CustomAgentConfig;
+  getAgent(agentId: string): Promise<CustomAgentConfig>;
 }
 
 // A turn's surface. The global '*,*' wildcard assignment is the default for
@@ -42,7 +44,7 @@ export interface AssignmentReader {
     workspaceId: string,
     channelId: string,
     options?: AssignmentLookupOptions,
-  ): ChannelAssignment | undefined;
+  ): Promise<ChannelAssignment | undefined>;
 }
 
 export interface ConfigStores {
@@ -57,7 +59,7 @@ export class AgentStore {
     this.agents = new Map(agents.map((agent) => [agent.id, agent]));
   }
 
-  getAgent(agentId: string): CustomAgentConfig {
+  async getAgent(agentId: string): Promise<CustomAgentConfig> {
     const agent = this.agents.get(agentId);
     if (!agent) {
       throw new UnknownAgentError(agentId);
@@ -73,11 +75,11 @@ export class AssignmentStore {
     this.assignments = assignments;
   }
 
-  find(
+  async find(
     workspaceId: string,
     channelId: string,
     options: AssignmentLookupOptions = {},
-  ): ChannelAssignment | undefined {
+  ): Promise<ChannelAssignment | undefined> {
     const surface = options.surface ?? 'direct';
     const exact = this.assignments.find(
       (assignment) =>
@@ -100,18 +102,18 @@ export class AssignmentStore {
   }
 }
 
-export function resolveAssignment(
+export async function resolveAssignment(
   workspaceId: string,
   channelId: string,
   stores: ConfigStores,
   options: AssignmentLookupOptions = {},
-): ResolvedAssignment {
-  const assignment = stores.assignments.find(workspaceId, channelId, options);
+): Promise<ResolvedAssignment> {
+  const assignment = await stores.assignments.find(workspaceId, channelId, options);
   if (!assignment) {
     throw new NoAssignmentError(`No enabled agent assignment for ${workspaceId}/${channelId}`);
   }
 
-  const agent = stores.agents.getAgent(assignment.agentId);
+  const agent = await stores.agents.getAgent(assignment.agentId);
   if (!agent.enabled) {
     throw new DisabledAgentError(agent.id);
   }
@@ -131,7 +133,7 @@ export function resolveAssignment(
 export function resolveAssignmentFromThreadKey(
   threadKey: string,
   stores: ConfigStores,
-): ResolvedAssignment {
+): Promise<ResolvedAssignment> {
   const { workspaceId, channelId } = parseSlackThreadKey(threadKey);
   return resolveAssignment(workspaceId, channelId, stores, {
     surface: surfaceForChannelId(channelId),

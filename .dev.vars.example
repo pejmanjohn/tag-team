@@ -1,0 +1,13 @@
+# Secrets for the Cloudflare lane (`wrangler dev` / the Deploy to Cloudflare
+# button prompt from this file). Slack credentials are NOT listed here on
+# purpose: the /admin Slack-connection wizard collects and stores them after
+# deploy, once the worker URL exists.
+
+# Admin token gating every /admin route (page + API). The app returns 404 for
+# /admin until this is set. Generate one with: openssl rand -hex 32
+TAG_ADMIN_TOKEN="replace-with-a-random-hex-string"
+
+# Optional: unlock the Anthropic catalog provider for a smarter default model.
+# Without it, the seeded profiles run keyless on the Workers AI binding
+# (@cf/zai-org/glm-5.2).
+ANTHROPIC_API_KEY=""

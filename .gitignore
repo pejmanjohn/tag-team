@@ -1,6 +1,8 @@
 node_modules/
 dist/
+dist-cf/
 dist-node/
+.wrangler-state/
 .env
 .env.*
 !.env.example

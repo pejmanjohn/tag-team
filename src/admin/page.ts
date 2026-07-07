@@ -464,7 +464,12 @@ details[open].advanced summary::before { content: "▾"; }
     modalTab: "details",
     editingAgentId: null,
     profileDraft: null,
-    profileError: ""
+    profileError: "",
+    slack: null,
+    slackDraft: { botToken: "", signingSecret: "" },
+    slackError: "",
+    slackSuccess: "",
+    slackBusy: false
   };
 
   // One source for the Workspace/Channel/Name form fields used by both the
@@ -635,16 +640,22 @@ details[open].advanced summary::before { content: "▾"; }
 
   function mainHtml() {
     var assignment = activeAssignment();
+    // The Slack-connection card: prominent (top) while the install has no
+    // usable wire credentials — nothing can answer until then — and a quiet
+    // provenance section (bottom) once connected.
+    var slackCard = slackConnectionHtml();
+    var slackTop = state.slack && !state.slack.connected ? slackCard : "";
+    var slackBottom = state.slack && state.slack.connected ? slackCard : "";
     if (!assignment) {
-      return '<main class="main"><div class="main-inner"><div class="empty">' +
+      return '<main class="main"><div class="main-inner">' + slackTop + '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
         '<p class="hint">Create the first channel scope, then attach a reusable profile and channel instructions.</p>' +
         '<button type="button" class="btn btn-soft" data-action="toggle-add-channel">Add channel</button>' +
-        '</div></div></main>';
+        '</div>' + slackBottom + '</div></main>';
     }
     var agent = agentById(assignment.agentId);
     var enabled = state.channelDraft.enabled;
-    return '<main class="main"><div class="main-inner">' +
+    return '<main class="main"><div class="main-inner">' + slackTop +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
       '<p class="hint">What Tag can do in this channel. It answers mentions here, always as @Tag.</p>' +
@@ -655,7 +666,82 @@ details[open].advanced summary::before { content: "▾"; }
       accessSummaryHtml() +
       advancedHtml(assignment) +
       saveBarHtml() +
+      slackBottom +
       '</div></main>';
+  }
+
+  // ---- Slack-connection wizard (first-run) ---------------------------------
+
+  function slackSourceBadge(source) {
+    if (source === "env") return '<span class="badge badge-on"><span class="dot"></span>Via environment</span> <span class="hint">Read-only &mdash; configured via environment; takes precedence over values stored here.</span>';
+    if (source === "stored") return '<span class="badge badge-on"><span class="dot"></span>Stored</span> <span class="hint">Saved from this wizard.</span>';
+    return '<span class="badge badge-off"><span class="dot"></span>Missing</span>';
+  }
+
+  function slackCredentialsWellHtml(conn) {
+    return '<div class="well"><dl>' +
+      '<div class="kv"><dt>Bot token</dt><dd>' + slackSourceBadge(conn.credentials.botToken) + '</dd></div>' +
+      '<div class="kv"><dt>Signing secret</dt><dd>' + slackSourceBadge(conn.credentials.signingSecret) + '</dd></div>' +
+      '<div class="kv"><dt>Bot user ID</dt><dd>' + slackSourceBadge(conn.credentials.botUserId) + (conn.credentials.botUserId === "missing" ? ' <span class="hint">Resolved automatically (auth.test) once a bot token exists.</span>' : "") + '</dd></div>' +
+      '</dl></div>';
+  }
+
+  function slackConnectionHtml() {
+    var conn = state.slack;
+    if (!conn) return "";
+    if (conn.connected) {
+      return '<section class="section"><div class="section-head"><div><h2 class="section-title">Slack connection</h2>' +
+        '<p class="hint">Where this install\\'s Slack credentials come from. Environment values always win over wizard-stored ones.</p></div>' +
+        '<span class="badge badge-on"><span class="dot"></span>Connected</span></div>' +
+        (state.slackSuccess ? '<p class="hint" style="color:var(--ok);">' + esc(state.slackSuccess) + '</p>' : "") +
+        slackCredentialsWellHtml(conn) +
+        '</section>';
+    }
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connect Slack</h2>' +
+      '<p class="hint">Tag Team is not connected to Slack yet. Create the app from the pre-filled manifest, install it to your workspace, then paste the credentials back here.</p></div>' +
+      '<span class="badge badge-off"><span class="dot"></span>Not connected</span></div>' +
+      slackCredentialsWellHtml(conn) +
+      '<div class="layer-legend">' +
+      '<div class="step"><span class="n">1</span><span><b style="font-weight:500; color:var(--text);">Create the app</b> &mdash; the manifest pre-fills this install\\'s events URL: <span class="chip">' + esc(conn.requestUrl) + '</span></span></div>' +
+      '<div class="step"><span class="n">2</span><span><b style="font-weight:500; color:var(--text);">Install to your workspace</b> &mdash; then copy the <b style="font-weight:500; color:var(--text);">Bot User OAuth Token</b> (OAuth &amp; Permissions) and the <b style="font-weight:500; color:var(--text);">Signing Secret</b> (Basic Information).</span></div>' +
+      '<div class="step"><span class="n">3</span><span><b style="font-weight:500; color:var(--text);">Paste both below</b> &mdash; the token is validated live against Slack before anything is stored.</span></div>' +
+      '</div>' +
+      '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer">Create your Slack app &nearr;</a></div>' +
+      '<form class="form-grid" data-action="slack-connect-form">' +
+      '<div class="field"><label class="field-label" for="slack-bot-token">Bot token</label><input class="input mono" id="slack-bot-token" name="botToken" type="password" autocomplete="off" placeholder="xoxb-..." value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
+      '<div class="field"><label class="field-label" for="slack-signing-secret">Signing secret</label><input class="input mono" id="slack-signing-secret" name="signingSecret" type="password" autocomplete="off" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"></div>' +
+      '<div class="full" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' +
+      '<button type="submit" class="btn btn-primary" ' + (state.slackBusy ? "disabled" : "") + '>' + (state.slackBusy ? "Validating..." : "Validate &amp; save") + '</button>' +
+      (state.slackError ? '<span class="field-error">' + esc(state.slackError) + '</span>' : "") +
+      '<span class="hint">The signing secret is checked on the first signed Slack event.</span>' +
+      '</div></form></section>';
+  }
+
+  function slackErrorText(message) {
+    if (message === "slack_auth_failed") return "Slack rejected the bot token (auth.test failed). Re-copy the xoxb- token and try again.";
+    if (message === "slack_unreachable") return "Could not reach the Slack API to validate the token. Check connectivity and try again.";
+    return message;
+  }
+
+  function submitSlackConnection(formData) {
+    var botToken = String(formData.get("botToken") || "").trim();
+    var signingSecret = String(formData.get("signingSecret") || "").trim();
+    state.slackDraft = { botToken: botToken, signingSecret: signingSecret };
+    if (!botToken) { state.slackError = "Bot token is required."; render(); return; }
+    if (!signingSecret) { state.slackError = "Signing secret is required."; render(); return; }
+    state.slackError = "";
+    state.slackBusy = true;
+    render();
+    postJson("/admin/api/slack-connection", "POST", { botToken: botToken, signingSecret: signingSecret }).then(function (result) {
+      state.slackBusy = false;
+      state.slackDraft = { botToken: "", signingSecret: "" };
+      state.slackSuccess = "Connected" + (result && result.team ? " to " + result.team : "") + (result && result.botName ? " as @" + result.botName : "") + ". " + ((result && result.note) || "");
+      return refreshData();
+    }).catch(function (error) {
+      state.slackBusy = false;
+      state.slackError = slackErrorText(error.message);
+      render();
+    });
   }
 
   function profileSectionHtml(agent, assignment) {
@@ -920,11 +1006,15 @@ details[open].advanced summary::before { content: "▾"; }
     return Promise.all([
       api("/admin/api/agents"),
       api("/admin/api/assignments"),
-      api("/admin/api/models")
+      api("/admin/api/models"),
+      // Resilient on purpose: the connection card is auxiliary — if this
+      // endpoint fails, the rest of the admin page must still render.
+      api("/admin/api/slack-connection").catch(function () { return null; })
     ]).then(function (parts) {
       state.agents = parts[0].agents || [];
       state.assignments = parts[1].assignments || [];
       state.models = parts[2];
+      state.slack = parts[3];
       var channels = concreteAssignments();
       if (!state.active && channels[0]) {
         state.active = { workspaceId: channels[0].workspaceId, channelId: channels[0].channelId };
@@ -999,6 +1089,10 @@ details[open].advanced summary::before { content: "▾"; }
       state.saveError = "";
       syncSaveBar();
     }
+    // Mirror the wizard inputs into state so unrelated re-renders (e.g. the
+    // channel toggle) do not wipe a half-pasted credential.
+    if (action === "slack-bot-token") { state.slackDraft.botToken = target.value; }
+    if (action === "slack-signing-secret") { state.slackDraft.signingSecret = target.value; }
   });
 
   document.addEventListener("change", function (event) {
@@ -1018,6 +1112,7 @@ details[open].advanced summary::before { content: "▾"; }
     event.preventDefault();
     if (action === "add-channel-form") addChannel(new FormData(form));
     if (action === "profile-add-channel") addProfileChannel(new FormData(form));
+    if (action === "slack-connect-form") submitSlackConnection(new FormData(form));
   });
 
   // Label persist rule shared by both add-channel forms: an explicitly typed

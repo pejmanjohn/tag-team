@@ -6,7 +6,11 @@ import { test } from 'node:test';
 
 import slackThreadAgent from '../src/agents/slack-thread.ts';
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
-import { SqliteAgentSnapshotStore } from '../src/config/snapshot-store.ts';
+import {
+  getOrCreateSnapshot,
+  snapshotFromEffectiveConfig,
+  SqliteAgentSnapshotStore,
+} from '../src/config/snapshot-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
 import { THREAD_TTL_MS } from '../src/slack/claim-store.ts';
@@ -45,8 +49,8 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
   };
 }
 
-test('agent snapshots are purged past the thread TTL, bounding the table', () => {
-  const effConfig = (channelId: string): EffectiveSlackConfig => ({
+function effConfig(channelId: string, instructions: string = ALPHA): EffectiveSlackConfig {
+  return {
     workspaceId: 'T_SNAPSHOT',
     channelId,
     agentId: AGENT_ID,
@@ -54,24 +58,64 @@ test('agent snapshots are purged past the thread TTL, bounding the table', () =>
     model: 'local-stub/snapshot-unit',
     provider: 'local-stub',
     allowedTools: [],
-    instructions: ALPHA,
+    instructions,
     instructionLayers: [],
-  });
+  };
+}
 
+test('agent snapshots are purged past the thread TTL, bounding the table', async () => {
   let now = 1_000_000;
   const store = new SqliteAgentSnapshotStore(':memory:', () => now);
   try {
-    store.getOrCreate('T_SNAPSHOT:C_OLD:1', () => effConfig('C_OLD'));
-    assert.ok(store.get('T_SNAPSHOT:C_OLD:1'));
+    await getOrCreateSnapshot(store, 'T_SNAPSHOT:C_OLD:1', () => effConfig('C_OLD'), () => now);
+    assert.ok(await store.get('T_SNAPSHOT:C_OLD:1'));
 
     // Advance past the TTL, then write another snapshot (which triggers a purge).
     now += THREAD_TTL_MS + 1;
-    store.getOrCreate('T_SNAPSHOT:C_NEW:1', () => effConfig('C_NEW'));
+    await getOrCreateSnapshot(store, 'T_SNAPSHOT:C_NEW:1', () => effConfig('C_NEW'), () => now);
 
-    assert.equal(store.get('T_SNAPSHOT:C_OLD:1'), undefined, 'the expired snapshot must be purged');
-    assert.ok(store.get('T_SNAPSHOT:C_NEW:1'), 'the fresh snapshot must remain');
+    assert.equal(
+      await store.get('T_SNAPSHOT:C_OLD:1'),
+      undefined,
+      'the expired snapshot must be purged',
+    );
+    assert.ok(await store.get('T_SNAPSHOT:C_NEW:1'), 'the fresh snapshot must remain');
   } finally {
     store.close();
+  }
+});
+
+test('putIfAbsent is write-once: a losing writer gets the PERSISTED row back', async () => {
+  // Two stores on the same file DB model the real race (the channel process
+  // and the agent self-call each hold their own SQLite connection).
+  const dir = mkdtempSync(join(tmpdir(), 'tag-team-snapshot-race-'));
+  const dbPath = join(dir, 'state.db');
+  // Pin the store clock: putIfAbsent TTL-purges rows older than now - TTL, and
+  // the fixture createdAt values must stay inside that window.
+  const now = () => 10_000;
+  const winner = new SqliteAgentSnapshotStore(dbPath, now);
+  const loser = new SqliteAgentSnapshotStore(dbPath, now);
+  try {
+    const first = snapshotFromEffectiveConfig(effConfig('C_RACE', ALPHA), 1_000);
+    const second = snapshotFromEffectiveConfig(effConfig('C_RACE', BETA), 2_000);
+
+    const persisted = await winner.putIfAbsent('T_SNAPSHOT:C_RACE:1', first);
+    assert.equal(persisted.instructions, ALPHA);
+
+    // The losing writer's build is discarded; it must act on the stored row.
+    const observed = await loser.putIfAbsent('T_SNAPSHOT:C_RACE:1', second);
+    assert.equal(observed.instructions, ALPHA);
+    assert.equal(observed.createdAt, 1_000);
+
+    // getOrCreateSnapshot serves the frozen row without re-resolving.
+    const served = await getOrCreateSnapshot(loser, 'T_SNAPSHOT:C_RACE:1', () => {
+      throw new Error('must not re-resolve a frozen thread');
+    });
+    assert.equal(served.instructions, ALPHA);
+  } finally {
+    winner.close();
+    loser.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -81,8 +125,8 @@ test('slack-thread freezes effective config per durable thread id', async () => 
 
   try {
     const seed = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
-    seed.createAgent(agent());
-    seed.putAssignment(assignment());
+    await seed.createAgent(agent());
+    await seed.putAssignment(assignment());
     seed.close();
 
     await withEnv(
@@ -98,7 +142,7 @@ test('slack-thread freezes effective config per durable thread id', async () => 
         assert.match(String(first.instructions), /SNAPSHOT_UNIT_ALPHA/);
 
         const editor = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
-        editor.updateAgent(AGENT_ID, { instructions: BETA });
+        await editor.updateAgent(AGENT_ID, { instructions: BETA });
         editor.close();
 
         const sameThread = await slackThreadAgent.initialize({ id: THREAD_KEY, env: {} });
@@ -109,7 +153,7 @@ test('slack-thread freezes effective config per durable thread id', async () => 
         assert.match(String(newThread.instructions), /SNAPSHOT_UNIT_BETA/);
 
         const disabler = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
-        disabler.updateAgent(AGENT_ID, { enabled: false });
+        await disabler.updateAgent(AGENT_ID, { enabled: false });
         disabler.close();
 
         const disabledSameThread = await slackThreadAgent.initialize({ id: THREAD_KEY, env: {} });

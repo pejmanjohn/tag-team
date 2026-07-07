@@ -146,7 +146,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
   const dir = mkdtempSync(join(tmpdir(), 'tag-team-agent-config-'));
   const dbPath = join(dir, 'state.db');
   const store = new SqliteConfigStore(dbPath, { agents: [], assignments: [] });
-  store.createAgent({
+  await store.createAgent({
     id: 'agent_runtime',
     name: 'Runtime Agent',
     description: 'Configured at runtime',
@@ -158,7 +158,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
     },
     allowedTools: [],
   });
-  store.putAssignment({
+  await store.putAssignment({
     workspaceId: 'T_RUNTIME',
     channelId: 'C_RUNTIME',
     agentId: 'agent_runtime',

@@ -32,6 +32,12 @@ type AssignmentFixture = {
   enabled: boolean;
   channelPromptAddendum?: string;
 };
+type SlackConnectionFixture = {
+  connected: boolean;
+  credentials: { botToken: string; signingSecret: string; botUserId: string };
+  requestUrl: string;
+  manifestUrl: string;
+};
 
 const releaseAgent = {
   id: 'agent_release',
@@ -138,18 +144,23 @@ function defaultAssignments(): AssignmentFixture[] {
   ];
 }
 
-function runAdminPageHarness(options: { assignments?: AssignmentFixture[] } = {}): {
+function runAdminPageHarness(
+  options: { assignments?: AssignmentFixture[]; slackConnection?: SlackConnectionFixture } = {},
+): {
   app: FakeElement;
   modalRoot: FakeElement;
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
+  slackPosts: unknown[];
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
   const modalRoot: FakeElement = { innerHTML: '' };
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
+  const slackPosts: unknown[] = [];
   let assignments = options.assignments ?? defaultAssignments();
+  const slackConnection = options.slackConnection;
   let resolveOpsEffective: (() => void) | undefined;
 
   const document = {
@@ -191,6 +202,35 @@ function runAdminPageHarness(options: { assignments?: AssignmentFixture[] } = {}
     }
     if (path === '/admin/api/models') {
       return Promise.resolve(jsonResponse({ automatic: { label: 'Automatic', value: null }, providers: [] }));
+    }
+    if (path === '/admin/api/slack-connection' && method === 'POST') {
+      slackPosts.push(JSON.parse(options?.body ?? '{}'));
+      // A successful save flips the fixture to connected/stored, exactly like
+      // the real endpoint's follow-up GET would report.
+      if (slackConnection) {
+        slackConnection.connected = true;
+        slackConnection.credentials = {
+          botToken: 'stored',
+          signingSecret: 'stored',
+          botUserId: 'stored',
+        };
+      }
+      return Promise.resolve(
+        jsonResponse({
+          ok: true,
+          team: 'Acme Inc',
+          botName: 'tag',
+          botUserId: 'U_BOT',
+          note: 'Signing secret saved; Slack proves it on the first signed event.',
+        }),
+      );
+    }
+    if (path === '/admin/api/slack-connection') {
+      // Without a fixture, mirror an endpoint failure: the page must render
+      // everything else and simply omit the card (resilience contract).
+      return slackConnection
+        ? Promise.resolve(jsonResponse(slackConnection))
+        : Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
     if (path.startsWith('/admin/api/effective-config?')) {
       const params = new URLSearchParams(path.slice(path.indexOf('?') + 1));
@@ -234,10 +274,20 @@ function runAdminPageHarness(options: { assignments?: AssignmentFixture[] } = {}
     modalRoot,
     listeners,
     putAssignments,
+    slackPosts,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
     },
+  };
+}
+
+function disconnectedSlackFixture(): SlackConnectionFixture {
+  return {
+    connected: false,
+    credentials: { botToken: 'missing', signingSecret: 'env', botUserId: 'missing' },
+    requestUrl: 'https://tag.example.dev/channels/slack/events',
+    manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
   };
 }
 
@@ -353,4 +403,102 @@ test('add-channel workspace prefill stays empty when no concrete assignments exi
 
   assert.doesNotMatch(harness.app.innerHTML, /T_DEMO/);
   assert.match(harness.app.innerHTML, /id="rail-workspace" name="workspaceId" value="" placeholder="T0123ABC"/);
+});
+
+test('admin page renders the Slack-connection wizard when credentials are missing', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Connect Slack/);
+  assert.match(harness.app.innerHTML, /Not connected/);
+  // The manifest deep-link is the server-provided URL, attribute-escaped.
+  assert.match(
+    harness.app.innerHTML,
+    /href="https:\/\/api\.slack\.com\/apps\?new_app=1&amp;manifest_json=%7B%22a%22%3A1%7D"/,
+  );
+  assert.match(harness.app.innerHTML, /tag\.example\.dev\/channels\/slack\/events/);
+  // Mixed provenance: the env-provided signing secret is read-only, the
+  // missing bot token asks for a paste.
+  assert.match(harness.app.innerHTML, /configured via environment/);
+  assert.match(harness.app.innerHTML, /name="botToken"/);
+  assert.match(harness.app.innerHTML, /name="signingSecret"/);
+  assert.match(harness.app.innerHTML, /first signed Slack event/);
+});
+
+test('admin page shows a compact connected card without a paste form when Slack is connected', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: {
+      connected: true,
+      credentials: { botToken: 'env', signingSecret: 'env', botUserId: 'stored' },
+      requestUrl: 'https://tag.example.dev/channels/slack/events',
+      manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
+    },
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /Slack connection/);
+  assert.match(harness.app.innerHTML, /Connected/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
+});
+
+test('admin page omits the connection card when the endpoint fails (resilience)', async () => {
+  const harness = runAdminPageHarness({ assignments: [] });
+  await flushAsync();
+
+  // Everything else still renders...
+  assert.match(harness.app.innerHTML, /No channels yet/);
+  // ...but no wizard card is painted from a failed connection fetch.
+  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /Slack connection/);
+});
+
+test('wizard paste-back submit posts both credentials and renders the connected state', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+  });
+  await flushAsync();
+
+  const submit = harness.listeners.submit;
+  assert.ok(submit);
+  submit({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: '  xoxb-pasted ', signingSecret: 'pasted-secret' },
+    ),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  // Trimmed on the client before the POST.
+  assert.deepEqual(harness.slackPosts, [{ botToken: 'xoxb-pasted', signingSecret: 'pasted-secret' }]);
+  assert.match(harness.app.innerHTML, /Connected to Acme Inc as @tag\./);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+});
+
+test('wizard submit validates empty fields inline without posting', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+  });
+  await flushAsync();
+
+  const submit = harness.listeners.submit;
+  assert.ok(submit);
+  submit({
+    target: submitTarget(
+      { 'data-action': 'slack-connect-form' },
+      { botToken: '', signingSecret: 'secret-only' },
+    ),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.equal(harness.slackPosts.length, 0);
+  assert.match(harness.app.innerHTML, /Bot token is required\./);
 });

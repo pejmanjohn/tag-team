@@ -3,8 +3,13 @@ import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
-import { getAgentSnapshotStore } from '../config/snapshot-store.ts';
-import { getConfigStore } from '../config/store.ts';
+import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
+import {
+  getAgentSnapshotStore,
+  getConfigStore,
+  type PlatformEnv,
+} from '../config/state-backend.ts';
 import { INTERNAL_AGENT_TOKEN_HEADER, isValidInternalAgentToken } from '../slack/internal-auth.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
 import { createLookupChannelBriefTool } from '../tools/flue-tools.ts';
@@ -27,20 +32,21 @@ export const route: AgentRouteHandler = async (c, next) => {
 };
 
 export default defineAgent(async ({ id }) => {
-  const store = getConfigStore();
+  const env = await resolveAgentPlatformEnv();
+  const store = getConfigStore(env);
   const stores = { agents: store, assignments: store };
   const { workspaceId, channelId } = parseSlackThreadKey(id);
   const resolve = () => resolveEffectiveSlackConfig(workspaceId, channelId, stores);
 
   // Channel threads are frozen (the channel handler wrote the snapshot at the
-  // first turn; getOrCreate serves that row). Direct conversations (DMs, App
-  // Home) are one continuous session, not a discrete thread, so they resolve the
-  // current config every turn instead of freezing — admin edits to the DM
-  // profile reach existing DM users.
+  // first turn; getOrCreateSnapshot serves that row). Direct conversations
+  // (DMs, App Home) are one continuous session, not a discrete thread, so they
+  // resolve the current config every turn instead of freezing — admin edits to
+  // the DM profile reach existing DM users.
   const config =
     surfaceForChannelId(channelId) === 'direct'
-      ? resolve()
-      : getAgentSnapshotStore().getOrCreate(id, resolve);
+      ? await resolve()
+      : await getOrCreateSnapshot(getAgentSnapshotStore(env), id, resolve);
 
   const tools = config.allowedTools.includes('lookup_channel_brief')
     ? [createLookupChannelBriefTool(config)]
@@ -52,3 +58,20 @@ export default defineAgent(async ({ id }) => {
     tools,
   };
 });
+
+/**
+ * The platform env the store factories need on Cloudflare (the TAG_STATE
+ * binding). This module executes inside the Flue-generated agent Durable
+ * Object there, where the bindings come from the runtime's ALS-scoped
+ * Cloudflare context — populated ONLY inside DO handlers, which is exactly
+ * where defineAgent's factory runs. Imported dynamically and only on the CF
+ * target: '@flue/runtime/cloudflare' has no business in the node lane's
+ * runtime graph, and on node the factories ignore the env anyway.
+ */
+async function resolveAgentPlatformEnv(): Promise<PlatformEnv | undefined> {
+  if (!isCloudflareTarget()) {
+    return undefined;
+  }
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return getCloudflareContext().env as PlatformEnv;
+}

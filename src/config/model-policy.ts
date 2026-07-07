@@ -1,4 +1,5 @@
 import { ModelResolutionError } from './errors.ts';
+import { isCloudflareTarget } from './runtime-target.ts';
 import type { CustomAgentConfig } from './types.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
@@ -16,6 +17,16 @@ export function resolveAgentModel(
   }
   if (env.ANTHROPIC_API_KEY) {
     return withProviderPrefix('anthropic', agent.defaultModels.claude);
+  }
+  // The stored workers-ai default is target-neutral (a bare `@cf/...` model
+  // id); the provider prefix is decided HERE, at resolution time. On the
+  // Cloudflare target it resolves via Flue's binding-backed `cloudflare`
+  // provider, which needs no credentials at all — this is what makes a
+  // keyless button deploy able to run a turn. On node the same default needs
+  // the REST provider (`cloudflare-workers-ai`, registered in src/app.ts) and
+  // its API token/account pair.
+  if (isCloudflareTarget()) {
+    return withProviderPrefix('cloudflare', agent.defaultModels['workers-ai']);
   }
   if (env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_ACCOUNT_ID) {
     return withProviderPrefix('cloudflare-workers-ai', agent.defaultModels['workers-ai']);

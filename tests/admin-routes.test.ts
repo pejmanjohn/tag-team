@@ -194,8 +194,8 @@ test('admin API blocks deleting an agent while assignments still reference it', 
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
-    store.createAgent(agent());
-    store.putAssignment({
+    await store.createAgent(agent());
+    await store.putAssignment({
       workspaceId: 'T_ADMIN',
       channelId: 'C_ADMIN',
       agentId: 'agent_admin',
@@ -241,7 +241,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
           },
           allowedTools: [],
         };
-        store.createAgent(unpinnedAgent);
+        await store.createAgent(unpinnedAgent);
 
         const response = await app.request('/admin/api/agents/agent_admin', {
           method: 'PATCH',
@@ -465,14 +465,14 @@ test('effective config endpoint resolves through the runtime assignment path', a
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdmin(store);
-    store.createAgent(
+    await store.createAgent(
       agent({
         instructions: 'Base profile instructions from the admin test.',
         model: 'local-stub/effective-model',
         allowedTools: ['lookup_channel_brief'],
       }),
     );
-    store.putAssignment({
+    await store.putAssignment({
       workspaceId: 'T_ADMIN',
       channelId: 'C_ADMIN',
       agentId: 'agent_admin',
@@ -518,7 +518,7 @@ test('admin API clears a pinned model with PATCH model: null', async () => {
   process.env.SLACK_TAG_MODEL = 'local-stub/fallback-after-clear';
   try {
     const app = appWithAdmin(store);
-    store.createAgent(agent());
+    await store.createAgent(agent());
 
     const response = await app.request('/admin/api/agents/agent_admin', {
       method: 'PATCH',
@@ -529,7 +529,7 @@ test('admin API clears a pinned model with PATCH model: null', async () => {
     assert.equal(response.status, 200);
     const body = (await response.json()) as { agent: CustomAgentConfig };
     assert.equal('model' in body.agent, false);
-    assert.equal('model' in store.getAgent('agent_admin'), false);
+    assert.equal('model' in (await store.getAgent('agent_admin')), false);
   } finally {
     if (previousFallback === undefined) {
       delete process.env.SLACK_TAG_MODEL;

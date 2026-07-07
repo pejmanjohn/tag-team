@@ -1,54 +1,69 @@
-import { DatabaseSync } from 'node:sqlite';
-
 import { computeSnapshotHash, type EffectiveSlackConfig } from './effective-config.ts';
 import type { AgentSnapshot } from './types.ts';
-import { openStateDb, resolveStateDbPath, THREAD_TTL_MS } from '../slack/claim-store.ts';
+import { THREAD_TTL_MS } from '../slack/claim-store.ts';
+import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
+import type { StateDb } from '../state/state-db.ts';
 
 interface SnapshotRow {
   snapshot_json: string;
 }
 
-export class SqliteAgentSnapshotStore {
-  private readonly db: DatabaseSync;
-  private readonly now: () => number;
+/**
+ * Public async snapshot store. The write path is `putIfAbsent`, not a plain
+ * put: snapshots are write-once per thread, and INSERT OR IGNORE inside the
+ * backend keeps the first-writer-wins race decision next to the data (a Node
+ * self-call process or a Durable Object resolves it identically).
+ */
+export interface AgentSnapshotStore {
+  get(threadKey: string): Promise<AgentSnapshot | undefined>;
+  /**
+   * Insert the snapshot unless the thread already has one; resolves to the
+   * PERSISTED row either way, never a losing writer's discarded build.
+   */
+  putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot>;
+  /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
+  close?(): void;
+}
 
-  constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
-    this.db = openStateDb(path);
-    this.now = now;
-    this.db.exec(
+/**
+ * Target-neutral snapshot storage logic over the StateDb mini-interface —
+ * shared by the Node backend and the Cloudflare Durable Object. Methods are
+ * synchronous; the async public interface wraps them.
+ */
+export class SnapshotStoreLogic {
+  constructor(
+    private readonly db: StateDb,
+    private readonly now: () => number = Date.now,
+  ) {
+    db.exec(
       `CREATE TABLE IF NOT EXISTS agent_snapshots (
         thread_key TEXT PRIMARY KEY,
         snapshot_json TEXT NOT NULL,
         snapshot_hash TEXT NOT NULL,
         created_at INTEGER NOT NULL
-      );`,
+      )`,
     );
   }
 
-  close(): void {
-    this.db.close();
-  }
-
   get(threadKey: string): AgentSnapshot | undefined {
-    const row = this.db
-      .prepare('SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?')
-      .get(threadKey) as SnapshotRow | undefined;
+    const row = this.db.get(
+      'SELECT snapshot_json FROM agent_snapshots WHERE thread_key = ?',
+      threadKey,
+    ) as SnapshotRow | undefined;
     return row ? (JSON.parse(row.snapshot_json) as AgentSnapshot) : undefined;
   }
 
-  getOrCreate(threadKey: string, resolve: () => EffectiveSlackConfig): AgentSnapshot {
-    const existing = this.get(threadKey);
-    if (existing) return existing;
-
+  putIfAbsent(threadKey: string, snapshot: AgentSnapshot): AgentSnapshot {
     this.purgeExpired();
-    const snapshot = snapshotFromEffectiveConfig(resolve(), this.now());
-    const inserted = this.db
-      .prepare(
-        `INSERT OR IGNORE INTO agent_snapshots (
-          thread_key, snapshot_json, snapshot_hash, created_at
-        ) VALUES (?, ?, ?, ?)`,
-      )
-      .run(threadKey, JSON.stringify(snapshot), snapshot.snapshotHash, snapshot.createdAt);
+    const inserted = this.db.run(
+      `INSERT OR IGNORE INTO agent_snapshots (
+        thread_key, snapshot_json, snapshot_hash, created_at
+      ) VALUES (?, ?, ?, ?)`,
+      threadKey,
+      JSON.stringify(snapshot),
+      snapshot.snapshotHash,
+      snapshot.createdAt,
+    );
 
     if (inserted.changes === 1) {
       return snapshot;
@@ -68,10 +83,50 @@ export class SqliteAgentSnapshotStore {
   // TTL: past it an implicit reply is no longer admitted (slack_threads is
   // purged on the same horizon), so the row is dead weight. Bounds the table.
   private purgeExpired(): void {
-    this.db
-      .prepare('DELETE FROM agent_snapshots WHERE created_at < ?')
-      .run(this.now() - THREAD_TTL_MS);
+    this.db.run('DELETE FROM agent_snapshots WHERE created_at < ?', this.now() - THREAD_TTL_MS);
   }
+}
+
+/** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
+export class SqliteAgentSnapshotStore implements AgentSnapshotStore {
+  private readonly db: NodeStateDb;
+  private readonly logic: SnapshotStoreLogic;
+
+  constructor(path: string = resolveStateDbPath(), now: () => number = Date.now) {
+    this.db = openStateDb(path);
+    this.logic = new SnapshotStoreLogic(this.db, now);
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  async get(threadKey: string): Promise<AgentSnapshot | undefined> {
+    return this.logic.get(threadKey);
+  }
+
+  async putIfAbsent(threadKey: string, snapshot: AgentSnapshot): Promise<AgentSnapshot> {
+    return this.logic.putIfAbsent(threadKey, snapshot);
+  }
+}
+
+/**
+ * Freeze-at-first-turn read path shared by the Slack channel and the durable
+ * agent: serve the existing snapshot if the thread has one, otherwise resolve
+ * the CURRENT effective config, build the snapshot, and write it write-once.
+ * The store decides races (INSERT OR IGNORE) and always returns the persisted
+ * row, so both callers act on the row that is actually served.
+ */
+export async function getOrCreateSnapshot(
+  store: AgentSnapshotStore,
+  threadKey: string,
+  resolve: () => EffectiveSlackConfig | Promise<EffectiveSlackConfig>,
+  now: () => number = Date.now,
+): Promise<AgentSnapshot> {
+  const existing = await store.get(threadKey);
+  if (existing) return existing;
+  const built = snapshotFromEffectiveConfig(await resolve(), now());
+  return store.putIfAbsent(threadKey, built);
 }
 
 export function snapshotFromEffectiveConfig(
@@ -94,17 +149,4 @@ export function snapshotFromEffectiveConfig(
     snapshotHash: computeSnapshotHash(config),
     createdAt,
   };
-}
-
-let cachedSnapshotStore: { path: string; store: SqliteAgentSnapshotStore } | undefined;
-
-export function getAgentSnapshotStore(): SqliteAgentSnapshotStore {
-  const path = resolveStateDbPath();
-  if (cachedSnapshotStore?.path === path) {
-    return cachedSnapshotStore.store;
-  }
-  cachedSnapshotStore?.store.close();
-  const store = new SqliteAgentSnapshotStore(path);
-  cachedSnapshotStore = { path, store };
-  return store;
 }

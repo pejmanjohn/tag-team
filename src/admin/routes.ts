@@ -5,6 +5,10 @@ import { getCookie, setCookie } from 'hono/cookie';
 import * as v from 'valibot';
 
 import { renderAdminPage } from './page.ts';
+// Build-time JSON import: the committed manifest is the single source of the
+// Slack app identity; the wizard deep-link below substitutes the request host
+// so users never hand-edit a request_url.
+import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json' };
 import {
   computeSnapshotHash,
   resolveEffectiveSlackConfig,
@@ -20,12 +24,25 @@ import {
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
-import { getConfigStore, type SqliteConfigStore } from '../config/store.ts';
+import type { SettingsStore } from '../config/settings-store.ts';
+import { getConfigStore, getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
+import type { ConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
+import {
+  describeSlackCredentialSources,
+  primeStoredSlackCredentials,
+  slackAuthTest,
+  SLACK_SETTING_KEYS,
+} from '../slack/credentials.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
 
 interface AdminRoutesOptions {
-  store?: SqliteConfigStore | undefined;
+  // Injection seam for tests/harnesses: any async ConfigStore serves the
+  // routes; absent, the platform backend is resolved per request (c.env is the
+  // Cloudflare bindings object there; Node ignores it).
+  store?: ConfigStore | undefined;
+  // Same seam for the Slack-connection wizard's settings persistence.
+  settings?: SettingsStore | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
 }
@@ -72,10 +89,17 @@ const assignmentSchema = v.object({
   channelPromptAddendum: v.optional(v.string()),
 });
 
+const slackConnectionSchema = v.object({
+  botToken: nonEmptyString,
+  signingSecret: nonEmptyString,
+});
+
 export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const app = new Hono();
   const tokenFromOptions = Object.hasOwn(options, 'adminToken');
-  const store = () => options.store ?? getConfigStore();
+  const store = (c: Context) => options.store ?? getConfigStore(c.env as PlatformEnv | undefined);
+  const settings = (c: Context) =>
+    options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
   const adminToken = () =>
     tokenFromOptions ? options.adminToken : process.env.TAG_ADMIN_TOKEN;
   const modelProviders = () =>
@@ -136,7 +160,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin', (c) => c.html(renderAdminPage()));
 
-  app.get('/admin/api/agents', (c) => c.json({ agents: store().listAgents() }));
+  app.get('/admin/api/agents', async (c) => c.json({ agents: await store(c).listAgents() }));
 
   app.get('/admin/api/models', (c) =>
     c.json({
@@ -157,9 +181,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({ error: 'model_not_resolvable' }, 422);
     }
     try {
-      const configStore = store();
+      const configStore = store(c);
       return c.json(
-        { agent: configStore.createAgent(agent), ...providerWarnings(agent.model, providerIds()) },
+        {
+          agent: await configStore.createAgent(agent),
+          ...providerWarnings(agent.model, providerIds()),
+        },
         201,
       );
     } catch (err) {
@@ -170,9 +197,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin/api/agents/:id', (c) => {
+  app.get('/admin/api/agents/:id', async (c) => {
     try {
-      return c.json({ agent: store().getAgent(c.req.param('id')) });
+      return c.json({ agent: await store(c).getAgent(c.req.param('id')) });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'not_found' }, 404);
@@ -188,9 +215,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     try {
-      const configStore = store();
+      const configStore = store(c);
       const agentId = c.req.param('id');
-      const current = configStore.getAgent(agentId);
+      const current = await configStore.getAgent(agentId);
       const patch = toAgentPatch(parsed.output);
       const next: ModelResolvableAgent = {
         ...current,
@@ -202,7 +229,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'model_not_resolvable' }, 422);
       }
       return c.json({
-        agent: configStore.updateAgent(agentId, patch),
+        agent: await configStore.updateAgent(agentId, patch),
         ...providerWarnings(next.model, providerIds()),
       });
     } catch (err) {
@@ -213,10 +240,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.delete('/admin/api/agents/:id', (c) => {
-    const configStore = store();
+  app.delete('/admin/api/agents/:id', async (c) => {
+    const configStore = store(c);
     const agentId = c.req.param('id');
-    const references = configStore.listAssignmentsForAgent(agentId);
+    const references = await configStore.listAssignmentsForAgent(agentId);
     if (references.length > 0) {
       return c.json(
         {
@@ -227,7 +254,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     try {
-      const deleted = configStore.deleteAgent(agentId);
+      const deleted = await configStore.deleteAgent(agentId);
       return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
     } catch (err) {
       if (err instanceof AgentStillAssignedError) {
@@ -237,15 +264,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/admin/api/assignments', (c) => {
+  app.get('/admin/api/assignments', async (c) => {
     if (!c.req.query('workspaceId') && !c.req.query('channelId')) {
-      return c.json({ assignments: store().listAssignments() });
+      return c.json({ assignments: await store(c).listAssignments() });
     }
     const key = assignmentKey(c);
     if (!key) {
       return invalidRequest(c);
     }
-    const assignment = store().getAssignment(key.workspaceId, key.channelId);
+    const assignment = await store(c).getAssignment(key.workspaceId, key.channelId);
     return assignment ? c.json({ assignment }) : c.json({ error: 'not_found' }, 404);
   });
 
@@ -256,7 +283,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     try {
-      return c.json({ assignment: store().putAssignment(toAssignment(parsed.output)) });
+      return c.json({ assignment: await store(c).putAssignment(toAssignment(parsed.output)) });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'unknown_agent' }, 404);
@@ -265,25 +292,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.delete('/admin/api/assignments', (c) => {
+  app.delete('/admin/api/assignments', async (c) => {
     const key = assignmentKey(c);
     if (!key) {
       return invalidRequest(c);
     }
-    const deleted = store().deleteAssignment(key.workspaceId, key.channelId);
+    const deleted = await store(c).deleteAssignment(key.workspaceId, key.channelId);
     return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
   });
 
-  app.get('/admin/api/effective-config', (c) => {
+  app.get('/admin/api/effective-config', async (c) => {
     const key = assignmentKey(c);
     if (!key) {
       return invalidRequest(c);
     }
     try {
-      const configStore = store();
+      const configStore = store(c);
       return c.json({
         config: effectiveConfigResponse(
-          resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
+          await resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
             agents: configStore,
             assignments: configStore,
           }),
@@ -300,7 +327,116 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // First-run Slack-connection wizard state: per-credential provenance
+  // (env > stored > missing) plus the manifest deep-link with this install's
+  // events URL substituted server-side — the one setup step every Slack bot
+  // makes users do by hand. Passing the settings store explicitly bypasses
+  // the resolver's 60s cache, so the card always shows fresh provenance.
+  app.get('/admin/api/slack-connection', async (c) => {
+    try {
+      const credentials = await describeSlackCredentialSources(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      );
+      const requestUrl = `${requestOrigin(c)}/channels/slack/events`;
+      return c.json({
+        credentials,
+        // Connected = both wire credentials resolvable somewhere. The bot
+        // user id is not required for a connection (it resolves via
+        // auth.test at event time when absent).
+        connected: credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing',
+        requestUrl,
+        manifestUrl: slackManifestUrl(requestOrigin(c)),
+      });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  // Wizard paste-back: validate the bot token LIVE via auth.test (so the
+  // paste feels instant and verified), then persist token + signing secret +
+  // the auth.test bot user id in the settings store. Environment values keep
+  // precedence at resolution time, so storing while env creds exist is
+  // harmless. The signing secret cannot be pre-validated — Slack only proves
+  // it on the first signed event; the response says so.
+  app.post('/admin/api/slack-connection', async (c) => {
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(slackConnectionSchema, body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const { botToken, signingSecret } = parsed.output;
+    let auth;
+    try {
+      auth = await slackAuthTest(botToken.trim());
+    } catch (err) {
+      // Distinct from a rejected token: Slack (or the SLACK_API_URL override)
+      // could not be reached at all — retriable, nothing stored.
+      console.error(
+        '[tag-team] wizard auth.test unreachable:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return c.json({ error: 'slack_unreachable' }, 502);
+    }
+    if (!auth.ok) {
+      return c.json(
+        { error: 'slack_auth_failed', ...(auth.error ? { detail: auth.error } : {}) },
+        422,
+      );
+    }
+    try {
+      const settingsStore = settings(c);
+      await settingsStore.setSetting(SLACK_SETTING_KEYS.botToken, botToken.trim());
+      await settingsStore.setSetting(SLACK_SETTING_KEYS.signingSecret, signingSecret.trim());
+      if (auth.botUserId) {
+        await settingsStore.setSetting(SLACK_SETTING_KEYS.botUserId, auth.botUserId);
+      }
+      // Prime the resolver cache in THIS isolate so the very next signed
+      // event verifies with the just-stored secret instead of waiting out
+      // the cache TTL.
+      primeStoredSlackCredentials({
+        botToken: botToken.trim(),
+        signingSecret: signingSecret.trim(),
+        botUserId: auth.botUserId,
+      });
+      return c.json({
+        ok: true,
+        ...(auth.teamName ? { team: auth.teamName } : {}),
+        ...(auth.botName ? { botName: auth.botName } : {}),
+        ...(auth.botUserId ? { botUserId: auth.botUserId } : {}),
+        note: 'Signing secret saved; Slack proves it on the first signed event.',
+      });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
   return app;
+}
+
+// The origin Slack must call back into. Behind Cloudflare/reverse proxies the
+// socket-level URL is not the public one — honor x-forwarded-proto/host when
+// present (matching isHttps below), else fall back to the request URL itself.
+function requestOrigin(c: Context): string {
+  const url = new URL(c.req.url);
+  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = c.req.header('x-forwarded-host')?.split(',')[0]?.trim();
+  const proto = forwardedProto || url.protocol.replace(/:$/, '');
+  const host = forwardedHost || c.req.header('host') || url.host;
+  return `${proto}://${host}`;
+}
+
+/**
+ * Slack's "create an app from a manifest" deep link. The committed manifest
+ * carries the `https://<YOUR_PUBLIC_HOST>` placeholder in its URL fields;
+ * substituting the real origin here (server-side, from the admin request)
+ * removes the copy-the-events-URL step entirely. `$schema` is editor tooling,
+ * not part of Slack's manifest schema — strip it from the deep link.
+ */
+function slackManifestUrl(origin: string): string {
+  const { $schema: _schema, ...manifest } = slackAppManifest;
+  const json = JSON.stringify(manifest).replaceAll('https://<YOUR_PUBLIC_HOST>', origin);
+  return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(json)}`;
 }
 
 function bearerToken(header: string | undefined): string | undefined {

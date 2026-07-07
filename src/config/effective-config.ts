@@ -29,15 +29,15 @@ export interface EffectiveSlackConfig {
   instructionLayers: InstructionLayer[];
 }
 
-export function resolveEffectiveSlackConfig(
+export async function resolveEffectiveSlackConfig(
   workspaceId: string,
   channelId: string,
   stores: ConfigStores,
   env: NodeJS.ProcessEnv = process.env,
-): EffectiveSlackConfig {
+): Promise<EffectiveSlackConfig> {
   // The durable agent and admin resolve from a thread key / channel id (no live
   // turn), so the surface is inferred from the channel id (D… = direct).
-  const assignment = resolveAssignment(workspaceId, channelId, stores, {
+  const assignment = await resolveAssignment(workspaceId, channelId, stores, {
     surface: surfaceForChannelId(channelId),
   });
   const model = resolveAgentModel(assignment.agent, env);

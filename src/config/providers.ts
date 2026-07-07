@@ -1,3 +1,5 @@
+import { isCloudflareTarget } from './runtime-target.ts';
+
 // Providers usable in this install. src/app.ts records every registerProvider()
 // call here, and built-in catalog providers count as detected when their
 // standard credential is present — per the Flue models guide they need no
@@ -45,6 +47,16 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
   },
 ];
 
+// Flue's binding-backed Workers AI provider: exists ONLY on the Cloudflare
+// target, where the AI binding makes it available with zero credentials (the
+// keyless-deploy default model resolves through it — see model-policy.ts).
+// Listed only there so the node lane's provider registry is unchanged.
+const CF_BINDING_PROVIDER: ProviderCatalogEntry = {
+  id: 'cloudflare',
+  envVars: [],
+  suggestions: ['cloudflare/@cf/zai-org/glm-5.2'],
+};
+
 export function knownProviderIds(env: NodeJS.ProcessEnv = process.env): Set<string> {
   return new Set(
     listRuntimeModelProviders({ env })
@@ -60,7 +72,10 @@ export function listRuntimeModelProviders({
   env?: NodeJS.ProcessEnv;
   registeredProviders?: ReadonlySet<string>;
 } = {}): RuntimeModelProvider[] {
-  const catalogById = new Map(BUILTIN_ENV_PROVIDERS.map((entry) => [entry.id, entry]));
+  const catalog = isCloudflareTarget()
+    ? [...BUILTIN_ENV_PROVIDERS, CF_BINDING_PROVIDER]
+    : BUILTIN_ENV_PROVIDERS;
+  const catalogById = new Map(catalog.map((entry) => [entry.id, entry]));
   const ids = new Set([...catalogById.keys(), ...registeredProviders]);
 
   return [...ids]
@@ -68,16 +83,19 @@ export function listRuntimeModelProviders({
     .map((id) => {
       const entry = catalogById.get(id) ?? customProviderEntry(id);
       const registered = registeredProviders.has(id);
+      const bindingBacked = entry.id === CF_BINDING_PROVIDER.id && isCloudflareTarget();
       const envConfigured =
         entry.envVars.length > 0 && entry.envVars.every((envVar) => Boolean(env[envVar]));
       return {
         id,
-        configured: registered || envConfigured,
+        configured: registered || envConfigured || bindingBacked,
         source: registered
           ? 'registered in src/app.ts'
-          : entry.envVars.length > 0
-            ? `via ${entry.envVars.join(' + ')}`
-            : 'custom provider',
+          : bindingBacked
+            ? 'Workers AI binding'
+            : entry.envVars.length > 0
+              ? `via ${entry.envVars.join(' + ')}`
+              : 'custom provider',
         suggestions: [...entry.suggestions],
       };
     });

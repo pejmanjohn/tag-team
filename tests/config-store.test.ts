@@ -8,7 +8,8 @@ import { test } from 'node:test';
 import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { resolveAssignment, surfaceForChannelId } from '../src/config/resolver.ts';
 import { seededAgents, seededAssignments } from '../src/config/seed.ts';
-import { getConfigStore, SqliteConfigStore } from '../src/config/store.ts';
+import { getConfigStore } from '../src/config/state-backend.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -43,14 +44,14 @@ function assignment(overrides: Partial<ChannelAssignment> = {}): ChannelAssignme
   };
 }
 
-test('SqliteConfigStore round-trips agent and assignment CRUD', () => {
+test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const created = agent({ model: 'local-stub/agent-created' });
 
-  store.createAgent(created);
-  assert.deepEqual(store.getAgent(created.id), created);
+  await store.createAgent(created);
+  assert.deepEqual(await store.getAgent(created.id), created);
 
-  const updated = store.updateAgent(created.id, {
+  const updated = await store.updateAgent(created.id, {
     instructions: 'Use the updated runtime instructions.',
     model: 'local-stub/agent-updated',
   });
@@ -61,29 +62,29 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', () => {
     channelLabel: 'eng-releases',
     channelPromptAddendum: 'Prefer channel-local launch context.',
   });
-  store.putAssignment(createdAssignment);
-  assert.deepEqual(store.find('T_TEST', 'C_TEST'), createdAssignment);
+  await store.putAssignment(createdAssignment);
+  assert.deepEqual(await store.find('T_TEST', 'C_TEST'), createdAssignment);
 
-  assert.equal(store.deleteAssignment('T_TEST', 'C_TEST'), true);
-  assert.equal(store.find('T_TEST', 'C_TEST'), undefined);
-  assert.equal(store.deleteAgent(created.id), true);
-  assert.throws(() => store.getAgent(created.id), /Unknown agent agent_test/);
+  assert.equal(await store.deleteAssignment('T_TEST', 'C_TEST'), true);
+  assert.equal(await store.find('T_TEST', 'C_TEST'), undefined);
+  assert.equal(await store.deleteAgent(created.id), true);
+  await assert.rejects(() => store.getAgent(created.id), /Unknown agent agent_test/);
 
   store.close();
 });
 
-test('SqliteConfigStore blocks deleting agents that still have assignments', () => {
+test('SqliteConfigStore blocks deleting agents that still have assignments', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  store.createAgent(agent());
-  store.putAssignment(assignment());
+  await store.createAgent(agent());
+  await store.putAssignment(assignment());
 
-  assert.throws(() => store.deleteAgent('agent_test'), /still assigned/);
-  assert.deepEqual(store.getAgent('agent_test'), agent());
+  await assert.rejects(() => store.deleteAgent('agent_test'), /still assigned/);
+  assert.deepEqual(await store.getAgent('agent_test'), agent());
 
   store.close();
 });
 
-test('SqliteConfigStore seeds an empty file database exactly once', () => {
+test('SqliteConfigStore seeds an empty file database exactly once', async () => {
   const { dir, path } = tempDbPath();
   const seedAgent = agent({ id: 'agent_seed' });
   const seedAssignment = assignment({ agentId: 'agent_seed' });
@@ -93,28 +94,28 @@ test('SqliteConfigStore seeds an empty file database exactly once', () => {
       agents: [seedAgent],
       assignments: [seedAssignment],
     });
-    assert.deepEqual(first.getAgent('agent_seed'), seedAgent);
-    assert.deepEqual(first.find('T_TEST', 'C_TEST'), seedAssignment);
-    assert.equal(first.deleteAssignment('T_TEST', 'C_TEST'), true);
-    assert.equal(first.deleteAgent('agent_seed'), true);
+    assert.deepEqual(await first.getAgent('agent_seed'), seedAgent);
+    assert.deepEqual(await first.find('T_TEST', 'C_TEST'), seedAssignment);
+    assert.equal(await first.deleteAssignment('T_TEST', 'C_TEST'), true);
+    assert.equal(await first.deleteAgent('agent_seed'), true);
     first.close();
 
     const second = new SqliteConfigStore(path, {
       agents: [seedAgent],
       assignments: [seedAssignment],
     });
-    assert.deepEqual(second.listAgents(), []);
-    assert.deepEqual(second.listAssignments(), []);
+    assert.deepEqual(await second.listAgents(), []);
+    assert.deepEqual(await second.listAssignments(), []);
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('default seed ships starter profiles plus the direct-message wildcard only', () => {
+test('default seed ships starter profiles plus the direct-message wildcard only', async () => {
   const store = new SqliteConfigStore(':memory:');
 
-  const agents = store.listAgents();
+  const agents = await store.listAgents();
   assert.equal(agents.length, 2);
   assert.deepEqual(
     agents.map((item) => item.name).sort(),
@@ -131,9 +132,9 @@ test('default seed ships starter profiles plus the direct-message wildcard only'
   assert.match(execBrief.instructions, /bold-led bullets/i);
   assert.match(execBrief.instructions, /no code/i);
 
-  assert.equal(store.getAssignment('T_DEMO', 'C_ENG'), undefined);
-  assert.equal(store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
-  assert.deepEqual(store.listAssignments(), [
+  assert.equal(await store.getAssignment('T_DEMO', 'C_ENG'), undefined);
+  assert.equal(await store.getAssignment('T_DEMO', 'C_EXEC'), undefined);
+  assert.deepEqual(await store.listAssignments(), [
     {
       workspaceId: '*',
       channelId: '*',
@@ -141,22 +142,22 @@ test('default seed ships starter profiles plus the direct-message wildcard only'
       enabled: true,
     },
   ]);
-  assert.equal(store.find('T_OTHER', 'D_DM')?.agentId, execBrief.id);
-  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
+  assert.equal((await store.find('T_OTHER', 'D_DM'))?.agentId, execBrief.id);
+  assert.equal(await store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
 
   assert.equal(seededAgents.length, 2);
   assert.equal(seededAssignments.length, 1);
   store.close();
 });
 
-test('SqliteConfigStore survives restart on a file database', () => {
+test('SqliteConfigStore survives restart on a file database', async () => {
   const { dir, path } = tempDbPath();
   const created = agent({ id: 'agent_persisted', model: 'local-stub/persisted' });
 
   try {
     const first = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    first.createAgent(created);
-    first.putAssignment(
+    await first.createAgent(created);
+    await first.putAssignment(
       assignment({
         workspaceId: 'T_FILE',
         channelId: 'C_FILE',
@@ -167,8 +168,8 @@ test('SqliteConfigStore survives restart on a file database', () => {
     first.close();
 
     const second = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    assert.deepEqual(second.getAgent(created.id), created);
-    assert.deepEqual(second.find('T_FILE', 'C_FILE'), {
+    assert.deepEqual(await second.getAgent(created.id), created);
+    assert.deepEqual(await second.find('T_FILE', 'C_FILE'), {
       workspaceId: 'T_FILE',
       channelId: 'C_FILE',
       agentId: created.id,
@@ -181,7 +182,7 @@ test('SqliteConfigStore survives restart on a file database', () => {
   }
 });
 
-test('SqliteConfigStore migrates pre-existing assignment tables to support channel labels', () => {
+test('SqliteConfigStore migrates pre-existing assignment tables to support channel labels', async () => {
   const { dir, path } = tempDbPath();
   const createdAgent = agent({ id: 'agent_legacy' });
 
@@ -238,7 +239,7 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
     legacy.close();
 
     const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    assert.deepEqual(store.getAssignment('T_LEGACY', 'C_LEGACY'), {
+    assert.deepEqual(await store.getAssignment('T_LEGACY', 'C_LEGACY'), {
       workspaceId: 'T_LEGACY',
       channelId: 'C_LEGACY',
       agentId: createdAgent.id,
@@ -246,7 +247,7 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
       channelPromptAddendum: 'Legacy channel addendum.',
     });
 
-    const labeled = store.putAssignment({
+    const labeled = await store.putAssignment({
       workspaceId: 'T_LEGACY',
       channelId: 'C_LEGACY',
       agentId: createdAgent.id,
@@ -255,32 +256,32 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
       channelPromptAddendum: 'Legacy channel addendum.',
     });
     assert.equal(labeled.channelLabel, 'eng-releases');
-    assert.equal(store.getAssignment('T_LEGACY', 'C_LEGACY')?.channelLabel, 'eng-releases');
+    assert.equal((await store.getAssignment('T_LEGACY', 'C_LEGACY'))?.channelLabel, 'eng-releases');
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test(':memory: config stores are isolated by connection', () => {
+test(':memory: config stores are isolated by connection', async () => {
   const first = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const second = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
 
-  first.createAgent(agent({ id: 'agent_memory_only' }));
+  await first.createAgent(agent({ id: 'agent_memory_only' }));
 
-  assert.equal(first.listAgents().some((item) => item.id === 'agent_memory_only'), true);
-  assert.equal(second.listAgents().some((item) => item.id === 'agent_memory_only'), false);
+  assert.equal((await first.listAgents()).some((item) => item.id === 'agent_memory_only'), true);
+  assert.equal((await second.listAgents()).some((item) => item.id === 'agent_memory_only'), false);
 
   first.close();
   second.close();
 });
 
-test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum', () => {
+test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  store.createAgent(agent());
-  store.putAssignment(assignment({ channelPromptAddendum: 'Use the runtime channel rule.' }));
+  await store.createAgent(agent());
+  await store.putAssignment(assignment({ channelPromptAddendum: 'Use the runtime channel rule.' }));
 
-  const resolved = resolveAssignment('T_TEST', 'C_TEST', {
+  const resolved = await resolveAssignment('T_TEST', 'C_TEST', {
     agents: store,
     assignments: store,
   });
@@ -291,36 +292,50 @@ test('resolveAssignment accepts SqliteConfigStore and preserves channel addendum
   store.close();
 });
 
-test('assignment lookup precedence is exact, workspace wildcard, channel wildcard, then global', () => {
+test('assignment lookup precedence is exact, workspace wildcard, channel wildcard, then global', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   for (const id of ['agent_exact', 'agent_workspace', 'agent_channel', 'agent_global']) {
-    store.createAgent(agent({ id }));
+    await store.createAgent(agent({ id }));
   }
 
-  store.putAssignment(assignment({ workspaceId: '*', channelId: '*', agentId: 'agent_global' }));
-  store.putAssignment(
+  await store.putAssignment(
+    assignment({ workspaceId: '*', channelId: '*', agentId: 'agent_global' }),
+  );
+  await store.putAssignment(
     assignment({ workspaceId: 'T_TEST', channelId: '*', agentId: 'agent_workspace' }),
   );
-  store.putAssignment(
+  await store.putAssignment(
     assignment({ workspaceId: '*', channelId: 'C_MATCH', agentId: 'agent_channel' }),
   );
-  store.putAssignment(
+  await store.putAssignment(
     assignment({ workspaceId: 'T_TEST', channelId: 'C_MATCH', agentId: 'agent_exact' }),
   );
 
-  assert.equal(store.find('T_TEST', 'C_MATCH')?.agentId, 'agent_exact');
-  assert.equal(store.find('T_TEST', 'C_OTHER')?.agentId, 'agent_workspace');
-  assert.equal(store.find('T_OTHER', 'C_MATCH')?.agentId, 'agent_channel');
-  assert.equal(store.find('T_OTHER', 'C_OTHER')?.agentId, 'agent_global');
+  assert.equal((await store.find('T_TEST', 'C_MATCH'))?.agentId, 'agent_exact');
+  assert.equal((await store.find('T_TEST', 'C_OTHER'))?.agentId, 'agent_workspace');
+  assert.equal((await store.find('T_OTHER', 'C_MATCH'))?.agentId, 'agent_channel');
+  assert.equal((await store.find('T_OTHER', 'C_OTHER'))?.agentId, 'agent_global');
 
   // Channel surface (fail-closed): the global '*,*' wildcard does NOT apply, but
   // workspace- and channel-scoped assignments still do. Direct surface keeps the
   // global wildcard as the default.
-  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
-  assert.equal(store.find('T_OTHER', 'C_OTHER', { surface: 'direct' })?.agentId, 'agent_global');
-  assert.equal(store.find('T_TEST', 'C_OTHER', { surface: 'channel' })?.agentId, 'agent_workspace');
-  assert.equal(store.find('T_OTHER', 'C_MATCH', { surface: 'channel' })?.agentId, 'agent_channel');
-  assert.equal(store.find('T_TEST', 'C_MATCH', { surface: 'channel' })?.agentId, 'agent_exact');
+  assert.equal(await store.find('T_OTHER', 'C_OTHER', { surface: 'channel' }), undefined);
+  assert.equal(
+    (await store.find('T_OTHER', 'C_OTHER', { surface: 'direct' }))?.agentId,
+    'agent_global',
+  );
+  assert.equal(
+    (await store.find('T_TEST', 'C_OTHER', { surface: 'channel' }))?.agentId,
+    'agent_workspace',
+  );
+  assert.equal(
+    (await store.find('T_OTHER', 'C_MATCH', { surface: 'channel' }))?.agentId,
+    'agent_channel',
+  );
+  assert.equal(
+    (await store.find('T_TEST', 'C_MATCH', { surface: 'channel' }))?.agentId,
+    'agent_exact',
+  );
 
   store.close();
 });
@@ -330,8 +345,8 @@ test('getConfigStore writes are visible to later slack-thread initializations in
 
   await withEnv({ SLACK_STATE_DB_PATH: path, SLACK_TAG_MODEL: 'local-stub/cache-test' }, async () => {
     const store = getConfigStore();
-    store.createAgent(agent({ id: 'agent_cached', instructions: 'Cached store instructions.' }));
-    store.putAssignment(
+    await store.createAgent(agent({ id: 'agent_cached', instructions: 'Cached store instructions.' }));
+    await store.putAssignment(
       assignment({ workspaceId: 'T_CACHE', channelId: 'C_CACHE', agentId: 'agent_cached' }),
     );
 
@@ -358,7 +373,7 @@ test('surfaceForChannelId classifies DM/App Home and the wildcard key as direct,
   assert.equal(surfaceForChannelId('G_PRIVATE_OR_MPIM'), 'channel');
 });
 
-test('the direct-message default (the seeded "*,*" row) is resolvable — admin can preview it', () => {
+test('the direct-message default (the seeded "*,*" row) is resolvable — admin can preview it', async () => {
   // Regression: surfaceForChannelId('*') must be 'direct' so resolving the
   // effective config of the '*/*' DM-default key does not 404 (it is the profile
   // that answers DMs, so the admin must be able to preview/configure it). Uses
@@ -370,7 +385,7 @@ test('the direct-message default (the seeded "*,*" row) is resolvable — admin 
     assignments: seededAssignments,
   });
   try {
-    const effective = resolveEffectiveSlackConfig(
+    const effective = await resolveEffectiveSlackConfig(
       '*',
       '*',
       { agents: store, assignments: store },
@@ -382,7 +397,7 @@ test('the direct-message default (the seeded "*,*" row) is resolvable — admin 
   }
 });
 
-test('a disabled assignment at the winning specificity turns the channel off instead of falling back to the wildcard', () => {
+test('a disabled assignment at the winning specificity turns the channel off instead of falling back to the wildcard', async () => {
   const store = new SqliteConfigStore(':memory:', {
     agents: [
       {
@@ -402,9 +417,9 @@ test('a disabled assignment at the winning specificity turns the channel off ins
   });
   try {
     // Explicitly disabled exact row: no fall-through to the enabled catch-all.
-    assert.equal(store.find('T_OFF', 'C_OFF'), undefined);
+    assert.equal(await store.find('T_OFF', 'C_OFF'), undefined);
     // Other channels still resolve through the wildcard.
-    assert.equal(store.find('T_OFF', 'C_ELSEWHERE')?.agentId, 'agent_default');
+    assert.equal((await store.find('T_OFF', 'C_ELSEWHERE'))?.agentId, 'agent_default');
   } finally {
     store.close();
   }
