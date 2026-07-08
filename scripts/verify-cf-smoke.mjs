@@ -287,7 +287,19 @@ async function main() {
   rmSync(PERSIST_DIR, { recursive: true, force: true });
 
   const { FakeSlackBackend, STUB_REPLY_MARKER } = await loadFake();
-  const backend = new FakeSlackBackend();
+  // The fake reports this workspace identity from auth.test (so the wizard
+  // persists it) and serves these channels from conversations.list/info (so the
+  // Add-channel proxy and the assignment-PUT validation have real fixtures).
+  const backend = new FakeSlackBackend({
+    slack: {
+      identity: { teamId: WORKSPACE, teamName: 'Smoke Workspace' },
+      channels: [
+        { id: CHANNEL, name: 'smoke-mentions', isMember: true },
+        { id: SLOW_CHANNEL, name: 'smoke-slow', isMember: true },
+        { id: 'C_SMOKE_EXTRA', name: 'general', isMember: false },
+      ],
+    },
+  });
   const fakePort = await getFreePort();
   const fake = await backend.listen(fakePort);
   console.log(`• fake Slack + provider backend on ${fake.url}`);
@@ -366,6 +378,27 @@ async function main() {
       'wizard reports stored credentials after the save',
       JSON.stringify(postWizardCreds),
     );
+    // The wizard persisted the connected workspace identity from auth.test.
+    check(
+      postWizard.body?.teamId === WORKSPACE,
+      'wizard persisted the connected team id',
+      String(postWizard.body?.teamId),
+    );
+
+    // --- Add-channel proxy: server-side conversations.list through workerd ---
+    const channels = await adminFetch(baseUrl, '/admin/api/slack-channels');
+    check(channels.status === 200, 'slack-channels proxy served', `HTTP ${channels.status}`);
+    const channelIds = (channels.body?.channels ?? []).map((channel) => channel.id);
+    check(
+      channelIds.includes(CHANNEL) && channelIds.includes(SLOW_CHANNEL),
+      'slack-channels proxy returns the fake fixture channels',
+      channelIds.join(','),
+    );
+    check(
+      channels.body?.teamId === WORKSPACE,
+      'slack-channels proxy reports the connected team id',
+      String(channels.body?.teamId),
+    );
 
     // --- Turn flow, verifying against the STORED signing secret ------------
 
@@ -376,6 +409,23 @@ async function main() {
       body: JSON.stringify({ model: 'local-stub/smoke-model' }),
     });
     check(patch.status === 200, 'admin PATCH pinned the agent model', `HTTP ${patch.status}`);
+    // A channel whose workspace does NOT match the connected team is rejected
+    // at the API — the exact miss that let a wrong-workspace channel through.
+    const mismatch = await adminFetch(baseUrl, '/admin/api/assignments', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workspaceId: 'T_WRONG_WS',
+        channelId: CHANNEL,
+        agentId: 'agent_exec_brief',
+        enabled: true,
+      }),
+    });
+    check(
+      mismatch.status === 400 && mismatch.body?.error === 'workspace_mismatch',
+      'mismatched-workspace assignment rejected (400 workspace_mismatch)',
+      `HTTP ${mismatch.status} ${mismatch.body?.error ?? ''}`,
+    );
+
     const put = await adminFetch(baseUrl, '/admin/api/assignments', {
       method: 'PUT',
       body: JSON.stringify({

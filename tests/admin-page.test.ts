@@ -35,8 +35,17 @@ type AssignmentFixture = {
 type SlackConnectionFixture = {
   connected: boolean;
   credentials: { botToken: string; signingSecret: string; botUserId: string };
+  teamId?: string | null;
+  teamName?: string | null;
   requestUrl: string;
   manifestUrl: string;
+};
+type SlackChannelFixture = { id: string; name: string; isPrivate?: boolean; isMember?: boolean };
+type SlackChannelsFixture = {
+  channels: SlackChannelFixture[];
+  teamId: string;
+  teamName: string;
+  truncated?: boolean;
 };
 
 const releaseAgent = {
@@ -145,13 +154,19 @@ function defaultAssignments(): AssignmentFixture[] {
 }
 
 function runAdminPageHarness(
-  options: { assignments?: AssignmentFixture[]; slackConnection?: SlackConnectionFixture } = {},
+  options: {
+    assignments?: AssignmentFixture[];
+    slackConnection?: SlackConnectionFixture;
+    slackChannels?: SlackChannelsFixture;
+    putIsMember?: boolean;
+  } = {},
 ): {
   app: FakeElement;
   modalRoot: FakeElement;
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
   slackPosts: unknown[];
+  channelListCalls: string[];
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -159,8 +174,11 @@ function runAdminPageHarness(
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
   const slackPosts: unknown[] = [];
+  const channelListCalls: string[] = [];
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
+  const slackChannels = options.slackChannels;
+  const putIsMember = options.putIsMember;
   let resolveOpsEffective: (() => void) | undefined;
 
   const document = {
@@ -191,7 +209,31 @@ function runAdminPageHarness(
         ),
         body,
       ];
-      return Promise.resolve(jsonResponse({ assignment: body }));
+      return Promise.resolve(
+        jsonResponse({
+          assignment: body,
+          ...(putIsMember !== undefined ? { isMember: putIsMember } : {}),
+        }),
+      );
+    }
+    if (path === '/admin/api/slack-channels' || path.startsWith('/admin/api/slack-channels?')) {
+      channelListCalls.push(path);
+      if (!slackChannels) {
+        return Promise.resolve(jsonResponse({ error: 'slack_not_configured' }, 409));
+      }
+      return Promise.resolve(
+        jsonResponse({
+          channels: slackChannels.channels.map((channel) => ({
+            id: channel.id,
+            name: channel.name,
+            isPrivate: channel.isPrivate ?? false,
+            isMember: channel.isMember ?? true,
+          })),
+          teamId: slackChannels.teamId,
+          teamName: slackChannels.teamName,
+          truncated: slackChannels.truncated ?? false,
+        }),
+      );
     }
     if (path === '/admin/api/assignments') {
       return Promise.resolve(
@@ -275,6 +317,7 @@ function runAdminPageHarness(
     listeners,
     putAssignments,
     slackPosts,
+    channelListCalls,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
@@ -286,8 +329,33 @@ function disconnectedSlackFixture(): SlackConnectionFixture {
   return {
     connected: false,
     credentials: { botToken: 'missing', signingSecret: 'env', botUserId: 'missing' },
+    teamId: null,
+    teamName: null,
     requestUrl: 'https://tag.example.dev/channels/slack/events',
     manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
+  };
+}
+
+function connectedSlackFixture(): SlackConnectionFixture {
+  return {
+    connected: true,
+    credentials: { botToken: 'stored', signingSecret: 'stored', botUserId: 'stored' },
+    teamId: 'T_DESIGN',
+    teamName: 'Acme Inc',
+    requestUrl: 'https://tag.example.dev/channels/slack/events',
+    manifestUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%22a%22%3A1%7D',
+  };
+}
+
+function channelsFixture(): SlackChannelsFixture {
+  return {
+    teamId: 'T_DESIGN',
+    teamName: 'Acme Inc',
+    truncated: false,
+    channels: [
+      { id: 'C_NEW', name: 'new-channel', isPrivate: false, isMember: true },
+      { id: 'C_PRIVATE', name: 'secret-room', isPrivate: true, isMember: false },
+    ],
   };
 }
 
@@ -368,41 +436,114 @@ test('channel rail groups concrete assignments under their own workspace headers
   assert.ok(demoHeader < demoChannel);
 });
 
-test('add-channel workspace prefill follows active channel and blank workspace submit validates inline', async () => {
-  const harness = runAdminPageHarness();
+test('add-channel opens a main-panel picker with the locked workspace and a channel dropdown', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture(),
+  });
   await flushAsync();
 
   const click = harness.listeners.click;
   assert.ok(click);
   click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
 
-  assert.match(harness.app.innerHTML, /id="rail-workspace" name="workspaceId" value="T_DESIGN"/);
+  // Workspace is locked text (name + id), not an editable input.
+  assert.match(harness.app.innerHTML, /Add a channel/);
+  assert.match(harness.app.innerHTML, /Acme Inc/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="workspaceId"/);
+  // The dropdown is populated from the proxy, private channels get a lock, and a
+  // channel the bot is not in is flagged.
+  assert.match(harness.app.innerHTML, /id="add-channel-select"/);
+  assert.match(harness.app.innerHTML, /# new-channel/);
+  assert.match(harness.app.innerHTML, /secret-room/);
+  assert.match(harness.app.innerHTML, /not a member/);
+  // Helper copy + the manual fallback affordance.
+  assert.match(harness.app.innerHTML, /Invite @Tag to the channel in Slack, then click Refresh/);
+  assert.match(harness.app.innerHTML, /Enter ID manually/);
+  // The picker fetched the proxy exactly once on open.
+  assert.equal(harness.channelListCalls.length, 1);
+});
 
+test('add-channel submit PUTs the connected workspace id and surfaces the invite reminder', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture(),
+    putIsMember: false,
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
   const submit = harness.listeners.submit;
-  assert.ok(submit);
+  assert.ok(click && submit);
+  click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
+
   submit({
-    target: submitTarget(
-      { 'data-action': 'add-channel-form' },
-      { workspaceId: '', channelId: 'C_NEW', channelLabel: 'new-channel' },
-    ),
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_PRIVATE' }),
     preventDefault() {},
   });
   await flushAsync();
 
-  assert.equal(harness.putAssignments.length, 0);
-  assert.match(harness.app.innerHTML, /Workspace ID is required\./);
+  // The PUT carries the CONNECTED workspace id (never a hand-typed one) and the
+  // picked channel.
+  assert.deepEqual(harness.putAssignments, [
+    {
+      workspaceId: 'T_DESIGN',
+      channelId: 'C_PRIVATE',
+      agentId: releaseAgent.id,
+      enabled: true,
+      channelLabel: 'secret-room',
+    },
+  ]);
+  // isMember:false from the server drives the invite reminder.
+  assert.match(harness.app.innerHTML, /Invite Tag to finish/);
+  assert.match(harness.app.innerHTML, /Invite @Tag to the channel in Slack/);
 });
 
-test('add-channel workspace prefill stays empty when no concrete assignments exist', async () => {
-  const harness = runAdminPageHarness({ assignments: [] });
+test('add-channel affordance is disabled until Slack is connected', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: disconnectedSlackFixture(),
+  });
+  await flushAsync();
+
+  // The rail + empty-state Add buttons are disabled with a connect-first hint,
+  // and no channel-list fetch happens while disconnected.
+  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled/);
+  assert.match(harness.app.innerHTML, /Connect Slack first/);
+  assert.equal(harness.channelListCalls.length, 0);
+});
+
+test('add-channel manual fallback reveals a server-validated channel-ID input', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture(),
+  });
   await flushAsync();
 
   const click = harness.listeners.click;
-  assert.ok(click);
+  const submit = harness.listeners.submit;
+  assert.ok(click && submit);
   click({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'toggle-manual-channel' }) });
+  await flushAsync();
 
-  assert.doesNotMatch(harness.app.innerHTML, /T_DEMO/);
-  assert.match(harness.app.innerHTML, /id="rail-workspace" name="workspaceId" value="" placeholder="T0123ABC"/);
+  assert.match(harness.app.innerHTML, /id="add-channel-manual" name="manualChannelId"/);
+
+  submit({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { manualChannelId: 'C_MANUAL' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.deepEqual(harness.putAssignments, [
+    { workspaceId: 'T_DESIGN', channelId: 'C_MANUAL', agentId: releaseAgent.id, enabled: true },
+  ]);
 });
 
 test('admin page renders the Slack-connection wizard when credentials are missing', async () => {
@@ -452,8 +593,9 @@ test('admin page omits the connection card when the endpoint fails (resilience)'
 
   // Everything else still renders...
   assert.match(harness.app.innerHTML, /No channels yet/);
-  // ...but no wizard card is painted from a failed connection fetch.
-  assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
+  // ...but no wizard card is painted from a failed connection fetch: neither the
+  // paste form nor either connection-card heading appears.
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
   assert.doesNotMatch(harness.app.innerHTML, /Slack connection/);
 });
 

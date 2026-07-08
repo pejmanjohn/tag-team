@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
@@ -14,12 +15,22 @@ const ADMIN_TOKEN = 'admin-secret-token';
 function appWithAdmin(store: SqliteConfigStore, adminToken?: string): Hono {
   const app = new Hono();
   const token = arguments.length >= 2 ? adminToken : ADMIN_TOKEN;
+  // A fresh in-memory settings store keeps the assignment-PUT Slack validation
+  // hermetic: with no stored bot token (and no SLACK_* env in CI), validation is
+  // skipped, so these CRUD assertions keep their exact pre-validation shape and
+  // never touch a file-backed store.
+  const settings = new SqliteSettingsStore(':memory:');
   // Pin the provider registry: importing src/app.ts anywhere in this test
   // process records real registrations, which would otherwise make the
   // unknown-provider pre-check reject the local-stub models used here.
   app.route(
     '/',
-    createAdminRoutes({ store, adminToken: token, knownProviders: new Set(['local-stub']) }),
+    createAdminRoutes({
+      store,
+      settings,
+      adminToken: token,
+      knownProviders: new Set(['local-stub']),
+    }),
   );
   return app;
 }

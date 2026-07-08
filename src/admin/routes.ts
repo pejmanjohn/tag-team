@@ -33,11 +33,18 @@ import {
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../config/types.ts';
+import { listSlackChannels, SlackChannelsError } from '../slack/channels.ts';
 import {
   describeSlackCredentialSources,
   primeStoredSlackCredentials,
+  readStoredSlackTeamInfo,
+  resolveSlackCredentials,
+  resolveSlackTeamInfo,
   slackAuthTest,
+  slackConversationsInfo,
+  slackTokenFingerprint,
   SLACK_SETTING_KEYS,
+  type SlackTeamInfo,
 } from '../slack/credentials.ts';
 import { constantTimeEquals } from '../slack/internal-auth.ts';
 
@@ -296,11 +303,111 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c);
     }
+    const input = parsed.output;
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+
+    // Slack validation guards EVERY assignment path (this API is the one choke
+    // point), but only when a bot token is resolvable AND the target is a
+    // concrete workspace+channel. Wildcards ('*') are scope rules, not real
+    // channels, and a credential-less (offline/dev) install keeps the exact
+    // pre-validation behavior so those setups and tests never break.
+    const { botToken } = await resolveSlackCredentials(platformEnv, settingsStore);
+    const isWildcard = input.workspaceId === '*' || input.channelId === '*';
+
+    let isMember: boolean | undefined;
+    let authoritativeLabel: string | undefined;
+    if (botToken && !isWildcard) {
+      const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
+      // (a) The channel must live in the CONNECTED workspace. This is the miss
+      //     that silently accepted a Paperplane Labs channel into an Acme Inc
+      //     install: name the connected workspace so the fix is obvious.
+      if (teamInfo.teamId && input.workspaceId !== teamInfo.teamId) {
+        return c.json(
+          {
+            error: 'workspace_mismatch',
+            message: workspaceMismatchMessage(teamInfo, input.workspaceId),
+            connectedTeamId: teamInfo.teamId,
+            connectedTeamName: teamInfo.teamName ?? null,
+          },
+          400,
+        );
+      }
+      // (b) The channel must actually exist in that workspace. A typo, a
+      //     wrong-workspace id, or a private channel the bot was never invited
+      //     to all surface here as channel_not_found.
+      let info;
+      try {
+        info = await slackConversationsInfo(botToken, input.channelId);
+      } catch {
+        // Slack unreachable: do not hard-fail an operator edit on a transient
+        // outage — skip verification and save what we can.
+        info = undefined;
+      }
+      if (info && !info.ok && info.error === 'channel_not_found') {
+        return c.json(
+          {
+            error: 'channel_not_found',
+            message: channelNotFoundMessage(input.channelId, teamInfo),
+          },
+          400,
+        );
+      }
+      if (info?.ok && info.channel) {
+        // (c) Membership drives the UI's "invite @Tag or it never hears
+        //     mentions" reminder; Slack's authoritative name becomes the label.
+        isMember = info.channel.isMember;
+        if (info.channel.name) {
+          authoritativeLabel = info.channel.name;
+        }
+      }
+    }
+
+    const assignment = toAssignment(input);
+    if (authoritativeLabel !== undefined) {
+      assignment.channelLabel = authoritativeLabel;
+    }
     try {
-      return c.json({ assignment: await store(c).putAssignment(toAssignment(parsed.output)) });
+      const saved = await store(c).putAssignment(assignment);
+      return c.json({
+        assignment: saved,
+        ...(isMember !== undefined ? { isMember } : {}),
+      });
     } catch (err) {
       if (err instanceof UnknownAgentError) {
         return c.json({ error: 'unknown_agent' }, 404);
+      }
+      return internalError(c, err);
+    }
+  });
+
+  // Server-side channel picker source for the Add-channel form: the browser
+  // never touches a Slack token. Cursor-paginated + cached in-isolate (see
+  // channels.ts); ?refresh=1 bypasses after the operator invites the bot to a
+  // new channel. Fails closed with a clear envelope when Slack is not connected.
+  app.get('/admin/api/slack-channels', async (c) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const { botToken } = await resolveSlackCredentials(platformEnv, settingsStore);
+    if (!botToken) {
+      return c.json({ error: 'slack_not_configured' }, 409);
+    }
+    const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
+    try {
+      const { channels, truncated } = await listSlackChannels(botToken, {
+        refresh: c.req.query('refresh') === '1',
+      });
+      return c.json({
+        channels,
+        teamId: teamInfo.teamId ?? null,
+        teamName: teamInfo.teamName ?? null,
+        truncated,
+      });
+    } catch (err) {
+      if (err instanceof SlackChannelsError) {
+        // A live Slack rejection (invalid_auth, missing_scope, ...): surface it
+        // as a clear 502 envelope rather than a bare internal error.
+        return c.json({ error: 'slack_list_failed', detail: err.slackError }, 502);
       }
       return internalError(c, err);
     }
@@ -348,10 +455,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // the resolver's 60s cache, so the card always shows fresh provenance.
   app.get('/admin/api/slack-connection', async (c) => {
     try {
+      const settingsStore = settings(c);
       const credentials = await describeSlackCredentialSources(
         c.env as PlatformEnv | undefined,
-        settings(c),
+        settingsStore,
       );
+      // STORED-only (no network on admin load): the connected workspace name is
+      // populated by the wizard save for new installs, and by the first
+      // channels-list / assignment backfill for pre-existing ones.
+      const teamInfo = await readStoredSlackTeamInfo(c.env as PlatformEnv | undefined, settingsStore);
       const requestUrl = `${requestOrigin(c)}/channels/slack/events`;
       return c.json({
         credentials,
@@ -359,6 +471,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         // user id is not required for a connection (it resolves via
         // auth.test at event time when absent).
         connected: credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing',
+        teamId: teamInfo.teamId ?? null,
+        teamName: teamInfo.teamName ?? null,
         requestUrl,
         manifestUrl: slackManifestUrl(requestOrigin(c)),
       });
@@ -412,6 +526,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (auth.botUserId) {
         await settingsStore.setSetting(SLACK_SETTING_KEYS.botUserId, auth.botUserId);
       }
+      // Persist the connected workspace identity from the same auth.test: the
+      // admin names the workspace, and the assignment PUT rejects channels from
+      // any OTHER workspace against this stored team id.
+      if (auth.teamId) {
+        await settingsStore.setSetting(SLACK_SETTING_KEYS.teamId, auth.teamId);
+        // Bind the team identity to the token that earned it: a later env
+        // token pointing elsewhere must invalidate this id, not inherit it.
+        await settingsStore.setSetting(
+          SLACK_SETTING_KEYS.teamTokenFingerprint,
+          slackTokenFingerprint(botToken),
+        );
+      }
+      if (auth.teamName) {
+        await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, auth.teamName);
+      }
       // Prime the resolver cache in THIS isolate so the very next signed
       // event verifies with the just-stored secret instead of waiting out
       // the cache TTL.
@@ -422,6 +551,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       });
       return c.json({
         ok: true,
+        ...(auth.teamId ? { teamId: auth.teamId } : {}),
         ...(auth.teamName ? { team: auth.teamName } : {}),
         ...(auth.botName ? { botName: auth.botName } : {}),
         ...(auth.botUserId ? { botUserId: auth.botUserId } : {}),
@@ -557,6 +687,41 @@ function toAssignment(input: v.InferOutput<typeof assignmentSchema>): ChannelAss
       ? { channelPromptAddendum: input.channelPromptAddendum }
       : {}),
   };
+}
+
+// Team-identity resolution that never throws: a backfill auth.test that cannot
+// reach Slack must not fail the whole assignment PUT / channels GET — the caller
+// treats an empty result as "team unknown, skip the workspace check".
+async function resolveTeamInfoSafely(
+  env: PlatformEnv | undefined,
+  store: SettingsStore,
+): Promise<SlackTeamInfo> {
+  try {
+    return await resolveSlackTeamInfo(env, store);
+  } catch {
+    return { teamId: undefined, teamName: undefined };
+  }
+}
+
+function connectedWorkspaceLabel(team: SlackTeamInfo): string {
+  if (team.teamName && team.teamId) return `${team.teamName} (${team.teamId})`;
+  return team.teamName ?? team.teamId ?? 'the connected workspace';
+}
+
+function workspaceMismatchMessage(team: SlackTeamInfo, workspaceId: string): string {
+  return (
+    `Tag Team is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
+    `different workspace (${workspaceId}). Add Tag to ${team.teamName ?? 'the connected workspace'} ` +
+    `in Slack, or connect Tag to that workspace instead.`
+  );
+}
+
+function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string {
+  const where = team.teamName ? ` in ${team.teamName}` : '';
+  return (
+    `Slack could not find channel ${channelId}${where}. Check for a typo, make sure the channel ` +
+    `is in the connected workspace, and if it is private invite @Tag to it first — then try again.`
+  );
 }
 
 function isModelResolvable(agent: ModelResolvableAgent): boolean {

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { SettingsStore } from '../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 
@@ -22,7 +24,23 @@ export const SLACK_SETTING_KEYS = {
   botToken: 'slack.botToken',
   signingSecret: 'slack.signingSecret',
   botUserId: 'slack.botUserId',
+  // The connected workspace identity, persisted from auth.test so the admin can
+  // (a) show which workspace this install is bound to and (b) reject a channel
+  // assignment whose workspace id does not match the connected one.
+  teamId: 'slack.teamId',
+  teamName: 'slack.teamName',
+  // Fingerprint of the bot token that produced the stored team identity.
+  // Credential resolution is env-first, so an operator can repoint the install
+  // at a DIFFERENT workspace just by setting SLACK_BOT_TOKEN — the stored team
+  // id must not outlive the token that earned it, or the workspace-mismatch
+  // guard validates against the wrong workspace.
+  teamTokenFingerprint: 'slack.teamTokenFingerprint',
 } as const;
+
+/** Non-reversible identifier for "which bot token produced this team info". */
+export function slackTokenFingerprint(botToken: string): string {
+  return createHash('sha256').update(botToken).digest('hex').slice(0, 16);
+}
 
 export interface ResolvedSlackCredentials {
   botToken: string | undefined;
@@ -169,23 +187,33 @@ export interface SlackAuthTestResult {
   ok: boolean;
   /** Slack's machine error code when ok is false (e.g. 'invalid_auth'). */
   error: string | undefined;
+  teamId: string | undefined;
   teamName: string | undefined;
   botName: string | undefined;
   botUserId: string | undefined;
 }
 
 /**
- * Live-validate a pasted bot token via `auth.test` against
- * `SLACK_API_URL || https://slack.com/api` (the same override the WebClient
- * honors, so the offline harnesses validate against the fake Slack). A raw
- * fetch on purpose: the wizard must not disturb the channel's cached
- * WebClient, and needs nothing but this one method. Network failures throw —
- * the caller maps them to a retriable "Slack unreachable" response, distinct
- * from Slack rejecting the token.
+ * The Slack Web API base, honoring the `SLACK_API_URL` override the WebClient
+ * also respects so every raw call here targets the same (fake, offline) Slack
+ * the rest of the app does. Trailing slashes trimmed for clean `${base}/method`
+ * joins.
+ */
+function slackApiBase(): string {
+  return (process.env.SLACK_API_URL || 'https://slack.com/api').replace(/\/+$/, '');
+}
+
+/**
+ * Live-validate a pasted bot token via `auth.test`. A raw fetch on purpose: the
+ * wizard must not disturb the channel's cached WebClient, and needs nothing but
+ * this one method. Network failures throw — the caller maps them to a retriable
+ * "Slack unreachable" response, distinct from Slack rejecting the token. The
+ * plain global `fetch` (no receiver, no `redirect: 'error'`) is what the two
+ * workerd fetch quirks solved in `createSlackWebClient` require, so this runs
+ * unmodified on the Cloudflare target.
  */
 export async function slackAuthTest(botToken: string): Promise<SlackAuthTestResult> {
-  const base = (process.env.SLACK_API_URL || 'https://slack.com/api').replace(/\/+$/, '');
-  const response = await fetch(`${base}/auth.test`, {
+  const response = await fetch(`${slackApiBase()}/auth.test`, {
     method: 'POST',
     headers: { authorization: `Bearer ${botToken}` },
   });
@@ -193,8 +221,184 @@ export async function slackAuthTest(botToken: string): Promise<SlackAuthTestResu
   return {
     ok: body.ok === true,
     error: typeof body.error === 'string' ? body.error : undefined,
+    teamId: typeof body.team_id === 'string' ? body.team_id : undefined,
     teamName: typeof body.team === 'string' ? body.team : undefined,
     botName: typeof body.user === 'string' ? body.user : undefined,
     botUserId: typeof body.user_id === 'string' ? body.user_id : undefined,
   };
+}
+
+/** One Slack channel, mapped to the admin-facing shape the proxy returns. */
+export interface SlackChannelSummary {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isMember: boolean;
+}
+
+/** Map a raw Slack conversation object to the admin summary shape. */
+function toChannelSummary(raw: unknown): SlackChannelSummary | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const channel = raw as Record<string, unknown>;
+  if (typeof channel.id !== 'string') return null;
+  return {
+    id: channel.id,
+    name: typeof channel.name === 'string' ? channel.name : '',
+    isPrivate: channel.is_private === true,
+    isMember: channel.is_member === true,
+  };
+}
+
+/** `response_metadata.next_cursor`, treating Slack's empty-string cursor as done. */
+function readNextCursor(body: Record<string, unknown>): string | undefined {
+  const meta = body.response_metadata;
+  if (!meta || typeof meta !== 'object') return undefined;
+  const cursor = (meta as Record<string, unknown>).next_cursor;
+  return typeof cursor === 'string' && cursor.length > 0 ? cursor : undefined;
+}
+
+export interface SlackConversationsListPage {
+  ok: boolean;
+  error: string | undefined;
+  channels: SlackChannelSummary[];
+  nextCursor: string | undefined;
+}
+
+/**
+ * One page of `conversations.list` (public + private, non-archived). A raw
+ * fetch like `slackAuthTest`, so the WebClient cache is never disturbed and the
+ * call runs unchanged on workerd. Pagination is the caller's job (channels.ts).
+ */
+export async function slackConversationsList(
+  botToken: string,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<SlackConversationsListPage> {
+  const params = new URLSearchParams({
+    types: 'public_channel,private_channel',
+    exclude_archived: 'true',
+    limit: String(options.limit ?? 200),
+  });
+  if (options.cursor) params.set('cursor', options.cursor);
+  const response = await fetch(`${slackApiBase()}/conversations.list`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  const rawChannels = Array.isArray(body.channels) ? body.channels : [];
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    channels: rawChannels
+      .map(toChannelSummary)
+      .filter((channel): channel is SlackChannelSummary => channel !== null),
+    nextCursor: readNextCursor(body),
+  };
+}
+
+export interface SlackConversationsInfoResult {
+  ok: boolean;
+  error: string | undefined;
+  channel: SlackChannelSummary | undefined;
+}
+
+/**
+ * `conversations.info` for one channel id — used to VERIFY an assignment's
+ * channel really exists in the connected workspace (and to read its
+ * authoritative name + membership). Raw fetch, workerd-safe, same as above.
+ */
+export async function slackConversationsInfo(
+  botToken: string,
+  channelId: string,
+): Promise<SlackConversationsInfoResult> {
+  const response = await fetch(`${slackApiBase()}/conversations.info`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${botToken}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams({ channel: channelId }).toString(),
+  });
+  const body = (await response.json()) as Record<string, unknown>;
+  return {
+    ok: body.ok === true,
+    error: typeof body.error === 'string' ? body.error : undefined,
+    channel: toChannelSummary(body.channel) ?? undefined,
+  };
+}
+
+export interface SlackTeamInfo {
+  teamId: string | undefined;
+  teamName: string | undefined;
+}
+
+/**
+ * The connected workspace identity as STORED (no network). The admin
+ * connection card reads this to name the workspace; it stays empty for installs
+ * created before team persistence until a backfill (below) populates it.
+ */
+export async function readStoredSlackTeamInfo(
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<SlackTeamInfo> {
+  const settings = store ?? getSettingsStore(env);
+  const [teamId, teamName] = await Promise.all([
+    settings.getSetting(SLACK_SETTING_KEYS.teamId),
+    settings.getSetting(SLACK_SETTING_KEYS.teamName),
+  ]);
+  return { teamId: nonEmpty(teamId), teamName: nonEmpty(teamName) };
+}
+
+/**
+ * The connected workspace identity, verified against the bot token actually in
+ * effect. The stored team id is trusted only while its recorded token
+ * fingerprint matches the RESOLVED token: credential resolution is env-first,
+ * so a later `SLACK_BOT_TOKEN` pointing at a different workspace must
+ * invalidate the wizard-era team id (or the workspace-mismatch guard would
+ * enforce the stale workspace and mis-key assignments). On a fingerprint miss
+ * or a pre-fingerprint install, `auth.test` runs once and the result —
+ * id, name, and fingerprint — is re-persisted (the self-healing migration).
+ * Returns empty fields when no token resolves a team; a fingerprint MISS with
+ * Slack unreachable also returns empty rather than the possibly-wrong stored
+ * value, so callers skip the check instead of enforcing a stale workspace.
+ */
+export async function resolveSlackTeamInfo(
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<SlackTeamInfo> {
+  const settings = store ?? getSettingsStore(env);
+  const stored = await readStoredSlackTeamInfo(env, settings);
+  const { botToken } = await resolveSlackCredentials(env, settings);
+  if (!botToken) {
+    // Display-only contexts (no token resolvable): the stored identity is the
+    // best available answer, and no validation path runs without a token.
+    return stored;
+  }
+  const fingerprint = slackTokenFingerprint(botToken);
+  if (stored.teamId) {
+    const storedFingerprint = nonEmpty(
+      await settings.getSetting(SLACK_SETTING_KEYS.teamTokenFingerprint),
+    );
+    if (storedFingerprint === fingerprint) {
+      return stored;
+    }
+  }
+  let auth: SlackAuthTestResult;
+  try {
+    auth = await slackAuthTest(botToken);
+  } catch {
+    return { teamId: undefined, teamName: undefined };
+  }
+  if (!auth.ok || !auth.teamId) {
+    return { teamId: undefined, teamName: undefined };
+  }
+  await settings.setSetting(SLACK_SETTING_KEYS.teamId, auth.teamId);
+  if (auth.teamName) {
+    await settings.setSetting(SLACK_SETTING_KEYS.teamName, auth.teamName);
+  }
+  await settings.setSetting(SLACK_SETTING_KEYS.teamTokenFingerprint, fingerprint);
+  return { teamId: auth.teamId, teamName: auth.teamName };
 }

@@ -97,15 +97,29 @@ export interface FakeSlackBehaviorConfig {
   identity?: FakeSlackIdentityConfig;
   repliesPages?: RepliesPage[];
   historyMessages?: unknown[];
+  /** Channels served by conversations.list / conversations.info. */
+  channels?: FakeSlackChannel[];
+  /** Page size for conversations.list cursor pagination (default 100). */
+  conversationsListPageSize?: number;
 }
 
 export interface FakeSlackIdentityConfig {
   appId?: string;
   botUserId?: string;
+  teamId?: string;
+  teamName?: string;
   displayName?: string;
   realName?: string;
   image512Url?: string;
   image72Url?: string;
+}
+
+/** A channel the fake exposes via conversations.list / conversations.info. */
+export interface FakeSlackChannel {
+  id: string;
+  name: string;
+  isPrivate?: boolean;
+  isMember?: boolean;
 }
 
 export interface FakeProviderConfig {
@@ -176,6 +190,8 @@ export class FakeSlackBackend {
   private replyText: string;
   private toolChannelId: string;
   private providerDelayMs: number;
+  private channels: FakeSlackChannel[];
+  private conversationsListPageSize: number;
   private readonly repliesPages: RepliesPage[];
   private readonly historyMessages: unknown[];
   private readonly cursorToIndex = new Map<string, number>();
@@ -198,6 +214,8 @@ export class FakeSlackBackend {
     this.identity = {
       appId: slack.identity?.appId ?? 'A_FAKE',
       botUserId: slack.identity?.botUserId ?? 'U_BOT',
+      teamId: slack.identity?.teamId ?? 'T_FAKE',
+      teamName: slack.identity?.teamName ?? 'Fake Workspace',
       displayName: slack.identity?.displayName ?? 'Tag',
       realName: slack.identity?.realName ?? 'Tag',
       image512Url: slack.identity?.image512Url ?? 'https://avatars.slack-edge.com/fake/flue_512.png',
@@ -205,6 +223,8 @@ export class FakeSlackBackend {
     };
     this.repliesPages = slack.repliesPages ?? DEFAULT_REPLIES_PAGES;
     this.historyMessages = slack.historyMessages ?? DEFAULT_HISTORY_MESSAGES;
+    this.channels = slack.channels ?? [];
+    this.conversationsListPageSize = slack.conversationsListPageSize ?? 100;
     this.providerMode = config.provider?.mode ?? 'ok';
     this.replyText = config.provider?.replyText ?? STUB_REPLY_MARKER;
     this.toolChannelId = config.provider?.toolChannelId ?? DEFAULT_TOOL_CHANNEL;
@@ -404,6 +424,12 @@ export class FakeSlackBackend {
       if (config.slack.identity !== undefined) {
         this.identity = { ...this.identity, ...config.slack.identity };
       }
+      if (config.slack.channels !== undefined) {
+        this.channels = config.slack.channels;
+      }
+      if (config.slack.conversationsListPageSize !== undefined) {
+        this.conversationsListPageSize = config.slack.conversationsListPageSize;
+      }
     }
     if (config.provider) {
       if (config.provider.mode !== undefined) {
@@ -529,7 +555,22 @@ export class FakeSlackBackend {
           ? { ok: false, error: 'internal_error' }
           : { ok: true, messages: this.historyMessages };
       case 'auth.test':
-        return { ok: true, user_id: this.identity.botUserId, app_id: this.identity.appId };
+        return {
+          ok: true,
+          user_id: this.identity.botUserId,
+          app_id: this.identity.appId,
+          team_id: this.identity.teamId,
+          team: this.identity.teamName,
+        };
+      case 'conversations.list':
+        return this.conversationsListResponse(body);
+      case 'conversations.info': {
+        const channelId = String(body.channel ?? '');
+        const found = this.channels.find((channel) => channel.id === channelId);
+        return found
+          ? { ok: true, channel: channelPayload(found) }
+          : { ok: false, error: 'channel_not_found' };
+      }
       case 'users.info':
         return {
           ok: true,
@@ -547,6 +588,23 @@ export class FakeSlackBackend {
       default:
         return { ok: true };
     }
+  }
+
+  // Cursor-paginated conversations.list over the configured channel fixture.
+  // The cursor is simply the next offset encoded as a string — enough to drive
+  // the proxy's multi-page merge deterministically.
+  private conversationsListResponse(body: Record<string, unknown>): Record<string, unknown> {
+    const pageSize = this.conversationsListPageSize;
+    const cursor = body.cursor ? Number(body.cursor) : 0;
+    const start = Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+    const slice = this.channels.slice(start, start + pageSize);
+    const nextIndex = start + pageSize;
+    const hasMore = nextIndex < this.channels.length;
+    return {
+      ok: true,
+      channels: slice.map(channelPayload),
+      response_metadata: hasMore ? { next_cursor: String(nextIndex) } : {},
+    };
   }
 
   private repliesResponse(body: Record<string, unknown>): Record<string, unknown> {
@@ -782,6 +840,17 @@ function openAiTextStreamBody(text: string): string {
 
 export function isMarkdownPost(body: Record<string, unknown>): boolean {
   return Array.isArray(body.blocks) && body.blocks.length > 0;
+}
+
+/** Raw Slack conversation object shape (subset the proxy reads). */
+function channelPayload(channel: FakeSlackChannel): Record<string, unknown> {
+  return {
+    id: channel.id,
+    name: channel.name,
+    is_private: channel.isPrivate ?? false,
+    is_member: channel.isMember ?? false,
+    is_archived: false,
+  };
 }
 
 function postText(body: Record<string, unknown>): string {

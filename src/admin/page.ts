@@ -225,7 +225,11 @@ button, input, textarea, select { font: inherit; }
   padding: 7px 10px;
   text-align: left;
 }
-.rail-add:hover { background: var(--raise); color: var(--text-2); }
+.rail-add:hover:not(:disabled) { background: var(--raise); color: var(--text-2); }
+.rail-add:disabled { cursor: not-allowed; opacity: 0.5; }
+.chan-opt-note { color: var(--text-3); font-size: 0.71875rem; }
+.link-btn { background: none; border: 0; color: var(--ember-deep); cursor: pointer; font-size: 0.8125rem; padding: 0; text-decoration: underline; }
+.link-btn:hover { color: var(--ember); }
 .rail-form {
   border-top: 1px solid var(--line);
   display: flex;
@@ -466,6 +470,12 @@ details[open].advanced summary::before { content: "▾"; }
     addChannelOpen: false,
     channelFormDraft: { workspaceId: "", channelId: "", channelLabel: "" },
     addChannelError: "",
+    addChannelInvite: "",
+    addChannelManual: false,
+    addChannelSelected: "",
+    slackChannels: null,
+    slackChannelsError: "",
+    slackChannelsLoading: false,
     swapOpen: false,
     channelDraft: { enabled: true, channelPromptAddendum: "" },
     dirty: false,
@@ -515,6 +525,9 @@ details[open].advanced summary::before { content: "▾"; }
           // Keep a server-provided detail (e.g. the wizard's slack_auth_failed
           // carries Slack's machine error code) so callers can surface it.
           if (body && body.detail) err.detail = body.detail;
+          // The assignment validators return a ready-to-show message (naming
+          // the connected workspace, or explaining a channel_not_found); keep it.
+          if (body && body.message) err.serverMessage = body.message;
           throw err;
         }
         return body;
@@ -641,13 +654,14 @@ details[open].advanced summary::before { content: "▾"; }
         });
       });
     }
-    html += '<button type="button" class="rail-add" data-action="toggle-add-channel">+ Add channel</button>';
-    if (state.addChannelOpen) {
-      html += '<form class="rail-form" data-action="add-channel-form">' +
-        channelFieldsHtml("rail") +
-        (state.addChannelError ? '<p class="field-error">' + esc(state.addChannelError) + '</p>' : "") +
-        '<div style="display:flex; gap:8px;"><button type="submit" class="btn btn-primary btn-sm">Add</button><button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>' +
-        '</form>';
+    // The form itself now lives in the MAIN panel (rail placement was a
+    // walkthrough complaint). When Slack is not connected the affordance is
+    // disabled — nothing can be added until the wizard above is done.
+    var addDisabled = !isSlackConnected();
+    html += '<button type="button" class="rail-add" data-action="toggle-add-channel"' +
+      (addDisabled ? ' disabled title="Connect Slack first"' : '') + '>+ Add channel</button>';
+    if (addDisabled) {
+      html += '<p class="hint" style="margin-left:12px; padding:0 10px;">Connect Slack first</p>';
     }
     return html + '</nav>';
   }
@@ -660,16 +674,19 @@ details[open].advanced summary::before { content: "▾"; }
     var slackCard = slackConnectionHtml();
     var slackTop = state.slack && !state.slack.connected ? slackCard : "";
     var slackBottom = state.slack && state.slack.connected ? slackCard : "";
+    var addPanel = addChannelPanelHtml();
+    var invite = inviteReminderHtml();
     if (!assignment) {
-      return '<main class="main"><div class="main-inner">' + slackTop + '<div class="empty">' +
+      var emptyBlock = state.addChannelOpen ? "" : '<div class="empty">' +
         '<h1 class="page-title">No channels yet &mdash; add one</h1>' +
-        '<p class="hint">Create the first channel scope, then attach a reusable profile and channel instructions.</p>' +
-        '<button type="button" class="btn btn-soft" data-action="toggle-add-channel">Add channel</button>' +
-        '</div>' + slackBottom + '</div></main>';
+        '<p class="hint">Pick a Slack channel and attach a profile. Tag answers @mentions there.</p>' +
+        addChannelButtonHtml("btn btn-soft") +
+        '</div>';
+      return '<main class="main"><div class="main-inner">' + slackTop + invite + addPanel + emptyBlock + slackBottom + '</div></main>';
     }
     var agent = agentById(assignment.agentId);
     var enabled = state.channelDraft.enabled;
-    return '<main class="main"><div class="main-inner">' + slackTop +
+    return '<main class="main"><div class="main-inner">' + slackTop + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
       '<p class="hint">What Tag can do in this channel. It answers mentions here, always as @Tag.</p>' +
@@ -682,6 +699,110 @@ details[open].advanced summary::before { content: "▾"; }
       saveBarHtml() +
       slackBottom +
       '</div></main>';
+  }
+
+  // ---- Add-channel (dropdown-driven, main panel) ---------------------------
+
+  function isSlackConnected() {
+    return !!(state.slack && state.slack.connected);
+  }
+
+  // The connected workspace id/name come from the channels proxy first (it
+  // backfills and always returns them when connected), then the connection card.
+  function connectedTeamId() {
+    if (state.slackChannels && state.slackChannels.teamId) return state.slackChannels.teamId;
+    if (state.slack && state.slack.teamId) return state.slack.teamId;
+    return "";
+  }
+
+  function connectedTeamName() {
+    if (state.slackChannels && state.slackChannels.teamName) return state.slackChannels.teamName;
+    if (state.slack && state.slack.teamName) return state.slack.teamName;
+    return connectedTeamId() || "your workspace";
+  }
+
+  function defaultAgentName() {
+    var agent = defaultAgent();
+    return agent ? agent.name : "a profile";
+  }
+
+  function findSlackChannel(channelId) {
+    var channels = (state.slackChannels && state.slackChannels.channels) || [];
+    return channels.find(function (channel) { return channel.id === channelId; }) || null;
+  }
+
+  function addChannelButtonHtml(classes) {
+    var disabled = !isSlackConnected();
+    return '<button type="button" class="' + classes + '" data-action="toggle-add-channel"' +
+      (disabled ? ' disabled title="Connect Slack first"' : '') + '>Add channel</button>';
+  }
+
+  function inviteReminderHtml() {
+    if (!state.addChannelInvite) return "";
+    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Tag to finish</p>' +
+      '<p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
+  }
+
+  function channelOptionsHtml() {
+    var channels = (state.slackChannels && state.slackChannels.channels) || [];
+    if (channels.length === 0) {
+      return '<option value="">No channels found &mdash; invite @Tag, then Refresh</option>';
+    }
+    var selected = state.addChannelSelected || channels[0].id;
+    return channels.map(function (channel) {
+      // Lock glyph marks a private channel; the trailing note flags one Tag has
+      // not been invited to (it will not hear mentions there until invited).
+      var lead = channel.isPrivate ? "\\uD83D\\uDD12 " : "# ";
+      var note = channel.isMember ? "" : "  \\u00B7 not a member";
+      return '<option value="' + esc(channel.id) + '"' + (channel.id === selected ? " selected" : "") + '>' +
+        esc(lead + channel.name + note) + '</option>';
+    }).join("");
+  }
+
+  function addChannelPanelHtml() {
+    if (!state.addChannelOpen) return "";
+    var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
+      '<p class="hint">Attach ' + esc(defaultAgentName()) + ' to a Slack channel. Tag answers @mentions there.</p></div>' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
+    if (!isSlackConnected()) {
+      return '<section class="section">' + head +
+        '<div class="empty"><p class="field-label">Connect Slack first</p>' +
+        '<p class="hint">Add the bot token and signing secret above, then come back to pick a channel.</p></div></section>';
+    }
+    var workspaceRow = '<div class="field"><label class="field-label">Workspace</label>' +
+      '<div class="bundle-row"><span class="b-name">' + esc(connectedTeamName()) + '</span>' +
+      '<span class="b-meta">' + esc(connectedTeamId()) + '</span><span class="spacer"></span>' +
+      '<span class="badge badge-on"><span class="dot"></span>Connected</span></div></div>';
+    var selector;
+    if (state.slackChannelsLoading) {
+      selector = '<div class="field"><label class="field-label">Channel</label><p class="hint">Loading channels&hellip;</p></div>';
+    } else if (state.slackChannelsError) {
+      selector = '<div class="field"><label class="field-label">Channel</label>' +
+        '<p class="field-error">' + esc(state.slackChannelsError) + '</p>' +
+        '<div><button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button></div></div>';
+    } else if (state.addChannelManual) {
+      selector = '<div class="field"><label class="field-label" for="add-channel-manual">Channel ID</label>' +
+        '<input class="input mono" id="add-channel-manual" name="manualChannelId" value="' + esc(state.channelFormDraft.channelId || "") + '" placeholder="C0123ABC" data-action="manual-channel-input">' +
+        '<p class="hint">It is still checked against ' + esc(connectedTeamName()) + ' when you add it.</p>' +
+        '<button type="button" class="link-btn" data-action="toggle-manual-channel">Pick from the list instead</button></div>';
+    } else {
+      var truncated = state.slackChannels && state.slackChannels.truncated
+        ? '<p class="chan-opt-note">Showing the first channels only &mdash; use &ldquo;enter ID manually&rdquo; for anything not listed.</p>'
+        : "";
+      selector = '<div class="field"><label class="field-label" for="add-channel-select">Channel</label>' +
+        '<div style="display:flex; gap:8px; align-items:center;">' +
+        '<select class="input" id="add-channel-select" name="channelSelect" data-action="select-channel-option">' + channelOptionsHtml() + '</select>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels" title="Refresh channel list">Refresh</button></div>' +
+        truncated +
+        '<p class="hint">Don\\'t see it? Invite @Tag to the channel in Slack, then click Refresh. ' +
+        '<button type="button" class="link-btn" data-action="toggle-manual-channel">Enter ID manually</button></p></div>';
+    }
+    var foot = '<div class="save-bar" style="justify-content:flex-start;">' +
+      (state.addChannelError ? '<p class="field-error">' + esc(state.addChannelError) + '</p>' : "") +
+      '<button type="submit" class="btn btn-primary btn-sm">Add channel</button></div>';
+    return '<section class="section">' + head +
+      '<form data-action="add-channel-form" style="display:flex; flex-direction:column; gap:14px;">' +
+      workspaceRow + selector + foot + '</form></section>';
   }
 
   // ---- Slack-connection wizard (first-run) ---------------------------------
@@ -1013,6 +1134,9 @@ details[open].advanced summary::before { content: "▾"; }
     state.channelFormDraft.workspaceId = workspaceId || state.channelFormDraft.workspaceId;
     state.dirty = false;
     state.saveError = "";
+    // The invite reminder belongs to the just-added channel; drop it when the
+    // operator navigates elsewhere.
+    state.addChannelInvite = "";
     // Re-render when the resolution lands — the click handler's synchronous
     // render() only paints the "Resolving..." placeholder.
     loadEffective().then(render);
@@ -1080,8 +1204,10 @@ details[open].advanced summary::before { content: "▾"; }
     }
     if (action === "close-profiles") { state.modalOpen = false; render(); }
     if (action === "select-channel") { selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
-    if (action === "toggle-add-channel") { state.addChannelOpen = true; state.addChannelError = ""; syncChannelFormWorkspacePrefill(); render(); }
-    if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelError = ""; render(); }
+    if (action === "toggle-add-channel") { openAddChannel(); }
+    if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; render(); }
+    if (action === "refresh-channels") { loadSlackChannels(true); }
+    if (action === "toggle-manual-channel") { state.addChannelManual = !state.addChannelManual; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
     if (action === "attach-selected-profile") { attachSelectedProfile(); }
     if (action === "detach-profile") { detachProfile(); }
@@ -1109,6 +1235,8 @@ details[open].advanced summary::before { content: "▾"; }
     // channel toggle) do not wipe a half-pasted credential.
     if (action === "slack-bot-token") { state.slackDraft.botToken = target.value; }
     if (action === "slack-signing-secret") { state.slackDraft.signingSecret = target.value; }
+    // Preserve a half-typed manual channel id across re-renders.
+    if (action === "manual-channel-input") { state.channelFormDraft.channelId = target.value; }
   });
 
   document.addEventListener("change", function (event) {
@@ -1119,6 +1247,8 @@ details[open].advanced summary::before { content: "▾"; }
       state.dirty = true;
       render();
     }
+    // Remember the picked channel so a Refresh / re-render keeps the selection.
+    if (action === "select-channel-option") { state.addChannelSelected = target.value; }
   });
 
   document.addEventListener("submit", function (event) {
@@ -1166,16 +1296,89 @@ details[open].advanced summary::before { content: "▾"; }
     });
   }
 
+  function openAddChannel() {
+    state.addChannelOpen = true;
+    state.addChannelError = "";
+    state.addChannelInvite = "";
+    render();
+    // Lazily populate the picker the first time it opens (connected only).
+    if (isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
+      loadSlackChannels(false);
+    }
+  }
+
+  function loadSlackChannels(refresh) {
+    if (!isSlackConnected()) return Promise.resolve();
+    state.slackChannelsLoading = true;
+    state.slackChannelsError = "";
+    render();
+    return api("/admin/api/slack-channels" + (refresh ? "?refresh=1" : "")).then(function (body) {
+      state.slackChannels = body;
+      state.slackChannelsLoading = false;
+      // Adopt the workspace identity the proxy backfilled so the locked
+      // Workspace field and the connection card both name it, even on installs
+      // that predate team persistence.
+      if (state.slack) {
+        if (body.teamId) state.slack.teamId = body.teamId;
+        if (body.teamName) state.slack.teamName = body.teamName;
+      }
+      render();
+    }).catch(function (error) {
+      state.slackChannelsLoading = false;
+      state.slackChannelsError = error.message === "slack_not_configured"
+        ? "Connect Slack first to list channels."
+        : (error.serverMessage || error.message || "Could not load channels.");
+      render();
+    });
+  }
+
+  function addChannelErrorText(error) {
+    if (error && error.serverMessage) return error.serverMessage;
+    var message = error && error.message;
+    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Tag if it is private.";
+    if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Tag is connected to.";
+    if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
+    return message || "Could not add the channel.";
+  }
+
   function addChannel(formData) {
     var agent = defaultAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
-    var submitted = submitChannelForm(formData, agent && agent.id, "Create a profile before adding a channel.", fail, true);
-    if (!submitted) return;
-    submitted.then(function () {
+    if (!agent) { fail("Create a profile before adding a channel."); return; }
+    if (!isSlackConnected()) { fail("Connect Slack first."); return; }
+    var workspaceId = connectedTeamId();
+    if (!workspaceId) { fail("Could not determine the connected workspace. Click Refresh and try again."); return; }
+    var channelId;
+    var label = "";
+    if (state.addChannelManual) {
+      channelId = String(formData.get("manualChannelId") || "").trim();
+      if (!channelId) { fail("Channel ID is required."); return; }
+      state.channelFormDraft.channelId = channelId;
+    } else {
+      channelId = String(formData.get("channelSelect") || state.addChannelSelected || "").trim();
+      if (!channelId) { fail("Pick a channel, or enter its ID manually."); return; }
+      var picked = findSlackChannel(channelId);
+      if (picked) label = picked.name;
+    }
+    // The rail add is for NEW channels — refuse to silently steal one already
+    // assigned to another profile (server would happily overwrite it).
+    if (assignmentByKey(workspaceId, channelId)) {
+      fail("Channel " + channelId + " is already assigned. Select it from the list to edit.");
+      return;
+    }
+    putAssignment(workspaceId, channelId, agent.id, true, undefined, label).then(function (result) {
       state.addChannelOpen = false;
+      state.addChannelManual = false;
       state.addChannelError = "";
+      state.channelFormDraft.channelId = "";
+      state.active = { workspaceId: workspaceId, channelId: channelId };
+      // Slack's authoritative name (server override) becomes the display label.
+      var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
+      state.addChannelInvite = result && result.isMember === false
+        ? "Tag is not a member of #" + savedLabel + " yet. Invite @Tag to the channel in Slack, or it will never hear mentions there."
+        : "";
       return refreshData();
-    }).catch(function (error) { fail(error.message); });
+    }).catch(function (error) { fail(addChannelErrorText(error)); });
   }
 
   function attachSelectedProfile() {
@@ -1257,7 +1460,7 @@ details[open].advanced summary::before { content: "▾"; }
       state.channelFormDraft.channelId = "";
       state.channelFormDraft.channelLabel = "";
       return refreshData();
-    }).catch(function (error) { fail(error.message); });
+    }).catch(function (error) { fail(addChannelErrorText(error)); });
   }
 
   function removeProfileChannel(workspaceId, channelId) {
