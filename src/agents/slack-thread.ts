@@ -2,6 +2,7 @@ import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
+import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { getOrCreateSnapshot } from '../config/snapshot-store.ts';
@@ -33,6 +34,7 @@ export const route: AgentRouteHandler = async (c, next) => {
 
 export default defineAgent(async ({ id }) => {
   const env = await resolveAgentPlatformEnv();
+  await applyResolvedProviderKeys(env);
   const store = getConfigStore(env);
   const stores = { agents: store, assignments: store };
   const { workspaceId, channelId } = parseSlackThreadKey(id);

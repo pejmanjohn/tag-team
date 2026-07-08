@@ -32,6 +32,7 @@ import type { CustomAgentConfig } from '../../src/config/types.ts';
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_THREAD_TS = '1782770400.000100';
+const PARITY_MODEL = 'local-stub/parity-stub-1';
 
 // S29 fixtures. The two opinionated profiles used to be seeded, then briefly
 // shipped as create-profile templates; profile creation is now blank-only, so
@@ -52,6 +53,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
     'Call out risks, owners, and verification evidence without inventing facts.',
   ].join(' '),
   enabled: true,
+  model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
 };
@@ -69,6 +71,7 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
     'Use no code, code fences, diffs, or implementation snippets.',
   ].join(' '),
   enabled: true,
+  model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
 };
@@ -89,7 +92,7 @@ function demoChannelConfig(config: ScenarioLaneConfig = {}): ScenarioLaneConfig 
   return {
     ...config,
     configSeed: {
-      agents: seededAgents,
+      agents: pinAgentsForParity(seededAgents),
       // The T_DEMO fixtures (single source: src/config/seed.ts) on top of the
       // real install seed (the '*/*' DM wildcard).
       assignments: [...demoChannelAssignments, ...seededAssignments],
@@ -701,6 +704,7 @@ export const scenarios: Scenario[] = [
             description: 'Exercises channel prompt addenda.',
             instructions: 'Base addendum test instructions.',
             enabled: true,
+            model: PARITY_MODEL,
             defaultModels: {
               claude: 'anthropic/addendum-claude',
               'workers-ai': '@cf/addendum/model',
@@ -1039,6 +1043,7 @@ export const scenarios: Scenario[] = [
             description: 'Assigned to exactly one channel.',
             instructions: 'Reply.',
             enabled: true,
+            model: PARITY_MODEL,
             defaultModels: {
               claude: 'anthropic/parity-claude',
               'workers-ai': '@cf/parity/model',
@@ -1364,6 +1369,10 @@ function twoProfileDifferentiationConfig(): ScenarioLaneConfig {
       ],
     },
   };
+}
+
+function pinAgentsForParity(agents: readonly CustomAgentConfig[]): CustomAgentConfig[] {
+  return agents.map((agent) => ({ ...agent, model: agent.model ?? PARITY_MODEL }));
 }
 
 function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {

@@ -89,7 +89,7 @@ child.on('close', (code) => {
         '  Next steps:',
         `    1. Open  ${deployedUrl}/admin`,
         '    2. Sign in with the TAG_ADMIN_TOKEN you set at deploy time.',
-        '    3. Click "Connect Slack" and follow the three steps.',
+        '    3. Click "Connect Slack" and follow the two steps.',
         '',
         '  New to the Slack side? Hand SETUP_AGENT.md to an AI agent,',
         '  or follow it yourself — it has the exact console click path.',

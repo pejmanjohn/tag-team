@@ -39,8 +39,12 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tag-team-model-seed-'));
   const dbPath = join(dir, 'state.db');
+  const pinnedSeedAgents = seededAgents.map((agent) => ({
+    ...agent,
+    model: 'cloudflare-workers-ai/@cf/zai-org/glm-5.2',
+  }));
   const store = new SqliteConfigStore(dbPath, {
-    agents: seededAgents,
+    agents: pinnedSeedAgents,
     assignments: [
       demoExecChannelAssignment,
       { workspaceId: '*', channelId: '*', agentId: 'agent_default', enabled: true },
@@ -78,7 +82,7 @@ test('Flue resolves the model specifier produced by the slack-thread agent', asy
   }
 });
 
-test('model policy prefers an explicit per-agent model over provider credentials and fallback', () => {
+test('model policy prefers an explicit per-agent model over provider credentials and SLACK_TAG_MODEL', () => {
   assert.equal(
     resolveAgentModel(
       modelAgent({ model: 'local-stub/agent-pinned' }),
@@ -93,43 +97,19 @@ test('model policy prefers an explicit per-agent model over provider credentials
   );
 });
 
-test('model policy uses the agent Anthropic default when Anthropic credentials exist', () => {
+test('model policy ignores provider credentials for unpinned agents and uses SLACK_TAG_MODEL', () => {
   assert.equal(
     resolveAgentModel(modelAgent(), {
       ANTHROPIC_API_KEY: 'anthropic-key',
       CLOUDFLARE_API_TOKEN: 'cf-token',
       CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-      SLACK_TAG_MODEL: 'local-stub/fallback',
-    }),
-    'anthropic/claude-sonnet-model',
-  );
-});
-
-test('model policy uses the Workers AI default when only Cloudflare credentials exist', () => {
-  assert.equal(
-    resolveAgentModel(modelAgent(), {
-      ANTHROPIC_API_KEY: undefined,
-      CLOUDFLARE_API_TOKEN: 'cf-token',
-      CLOUDFLARE_ACCOUNT_ID: 'cf-account',
-      SLACK_TAG_MODEL: 'local-stub/fallback',
-    }),
-    'cloudflare-workers-ai/@cf/workers/model',
-  );
-});
-
-test('model policy falls back to SLACK_TAG_MODEL when provider credentials are absent', () => {
-  assert.equal(
-    resolveAgentModel(modelAgent(), {
-      ANTHROPIC_API_KEY: undefined,
-      CLOUDFLARE_API_TOKEN: undefined,
-      CLOUDFLARE_ACCOUNT_ID: undefined,
       SLACK_TAG_MODEL: 'local-stub/offline-fallback',
     }),
     'local-stub/offline-fallback',
   );
 });
 
-test('model policy fails with actionable env names when no model can be selected', () => {
+test('model policy fails with the /admin fix when an unpinned agent has no fallback', () => {
   assert.throws(
     () =>
       resolveAgentModel(modelAgent(), {
@@ -138,7 +118,7 @@ test('model policy fails with actionable env names when no model can be selected
         CLOUDFLARE_ACCOUNT_ID: undefined,
         SLACK_TAG_MODEL: undefined,
       }),
-    /agent\.model.*ANTHROPIC_API_KEY.*CLOUDFLARE_API_TOKEN.*CLOUDFLARE_ACCOUNT_ID.*SLACK_TAG_MODEL/s,
+    /No model pinned for agent agent_model.*Pin a model in \/admin.*SLACK_TAG_MODEL/s,
   );
 });
 
@@ -152,6 +132,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
     description: 'Configured at runtime',
     instructions: 'Runtime configured instructions.',
     enabled: true,
+    model: 'local-stub/runtime-pinned',
     defaultModels: {
       claude: 'anthropic/runtime-claude',
       'workers-ai': '@cf/runtime/model',
@@ -171,8 +152,8 @@ test('slack-thread initializes from the SQLite config store for the current stat
       {
         SLACK_STATE_DB_PATH: dbPath,
         SLACK_TAG_MODEL: 'local-stub/runtime-fallback',
-        // Scrub ambient provider creds: they outrank the fallback model and
-        // would flip the resolved model on a developer/CI machine.
+        // Scrub ambient provider creds so this test stays independent of
+        // developer/CI provider state even though model policy ignores them.
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,
@@ -180,7 +161,7 @@ test('slack-thread initializes from the SQLite config store for the current stat
       () => slackThreadAgent.initialize({ id: 'T_RUNTIME:C_RUNTIME:1782770400.000100', env: {} }),
     );
 
-    assert.equal(config.model, 'local-stub/runtime-fallback');
+    assert.equal(config.model, 'local-stub/runtime-pinned');
     assert.match(String(config.instructions), /Runtime configured instructions\./);
   } finally {
     rmSync(dir, { recursive: true, force: true });

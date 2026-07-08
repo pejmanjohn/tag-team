@@ -9,7 +9,7 @@ Tag Team answers `@`-mentions, thread replies, and DMs in your workspace, and ev
 **Is this for you?** The hard constraints, up front (details under [Good to know](#good-to-know)):
 
 - One deploy serves **one Slack workspace** — no multi-workspace OAuth distribution yet.
-- On Cloudflare's free tier, the Workers AI and Durable Object daily caps are **hard errors** under load; an `ANTHROPIC_API_KEY` moves model spend off Workers AI.
+- On Cloudflare's free tier, the Workers AI and Durable Object daily caps are **hard errors** under load; adding a provider key and pinning profiles away from Workers AI moves model spend.
 - `/admin` auth is a **bearer token**, not SSO.
 - **Updates are manual**: the Deploy button clones this repo (it does not fork), so upgrading is a re-deploy; append-only migrations carry state over.
 - **Durability is single-host** — multi-instance deployments would need a shared store first.
@@ -25,7 +25,7 @@ Button to first answer in four steps — expect one detour out to Slack's app co
 3. **Click "Create your Slack app".** The first-run wizard deep-links Slack's app console with this repo's manifest — the events request URL already points at your worker. Install the app to your workspace. If Slack shows the request URL as unverified, click **Retry** on Event Subscriptions: the worker echoes the verification challenge even before credentials are saved.
 4. **Paste back the bot token and signing secret.** The wizard validates the token live against Slack `auth.test` and stores both in Durable Object state. Env secrets (`wrangler secret put`) always take precedence if you set them later.
 
-The first mention answers with **zero model keys**: on the Cloudflare target the default model resolves to [`@cf/zai-org/glm-5.2`](https://developers.cloudflare.com/workers-ai/models/glm-5.2/) through the Workers AI binding — that link is its Workers AI model page, so you can check availability on your plan before deploying. If the model errors on your account, the failure surfaces as one sanitized reply in the thread; pin any other model in `/admin` or set `SLACK_TAG_MODEL`. Add an `ANTHROPIC_API_KEY` secret to upgrade the default to Claude.
+The first mention answers with **zero model keys** on a fresh Cloudflare deploy: the seeded Default profile is explicitly pinned to [`cloudflare/@cf/zai-org/glm-5.2`](https://developers.cloudflare.com/workers-ai/models/glm-5.2/) through the Workers AI binding — that link is its Workers AI model page, so you can check availability on your plan before deploying. If the model errors on your account, the failure surfaces as one sanitized reply in the thread; pin any other model in `/admin`. Add an `ANTHROPIC_API_KEY` secret, or paste it in Settings, to make Claude models available in the picker; keys do not silently switch a pinned profile.
 
 ## What it does
 
@@ -53,7 +53,7 @@ The first mention answers with **zero model keys**: on the Cloudflare target the
 - A single self-contained admin page, gated by `TAG_ADMIN_TOKEN` — `Authorization: Bearer` or a one-time `?token=` login that sets an HttpOnly cookie and strips the token via redirect.
 - Reusable profiles: name, description, model, instructions, and an enable toggle. Disabling a profile stops it in every channel it is attached to.
 - Per-channel assignments: add a channel by workspace + channel ID, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
-- Model pinning: a combobox offering "Automatic (provider default)" plus suggestions grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
+- Model pinning: a combobox showing concrete models grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
 - A read-only Access summary showing exactly what a new thread will use — profile, model, provider, allowed tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
@@ -133,7 +133,7 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `SLACK_BOT_USER_ID` | optional | Bot user id used to filter self/loop messages. If unset, taken from the wizard (stored from `auth.test`) or resolved once via `auth.test`. An explicit empty string means "no bot user id" — fail-closed for message-family events. |
 | `SLACK_API_URL` | optional | Override the Slack Web API base URL (offline/fake Slack). |
 | `SLACK_TAG_PUBLIC_URL` | optional | Public base URL for the `/admin` Configure links in reply footers and channel onboarding. If unset, Slack shows a plain `Configure` label without a link. |
-| `SLACK_TAG_MODEL` | optional | Fallback/override model specifier (`provider/model`). Used when the assigned agent has no explicit `model` and no live provider credentials — and, on the Cloudflare target, as an explicit operator override taken ahead of the keyless Workers AI binding default. |
+| `SLACK_TAG_MODEL` | optional | Offline/dev fallback model specifier (`provider/model`) for an unpinned profile, mainly on the Node target. Pinned profiles always use their saved `agent.model`. |
 | `SLACK_TAG_ALLOW_DMS` | optional | DMs are on by default; `false` makes the bot reachable only in channels. |
 | `SLACK_TAG_UNASSIGNED_HINT` | optional | On by default: a mention in an unassigned channel sends the mentioner one rate-limited ephemeral hint linking to `/admin`. `false` disables the hint; the channel itself never sees anything either way. |
 | `TAG_AGENT_API_TOKEN` | optional | Shared internal token gating `POST /agents/slack-thread/:id` for external callers only — the app's own agent dispatch is in-process and needs no configuration. Unset is safe: the token falls back to a random per-process/per-isolate value, so the endpoint is closed to outsiders by default; set it only to authorize external callers deliberately. |
@@ -150,17 +150,15 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 
 **Model selection, per agent:**
 
-1. `agent.model` from the runtime config store, when set.
-2. The agent's Anthropic default, when `ANTHROPIC_API_KEY` is present.
-3. The agent's Workers AI default — keyless via the binding on Cloudflare; REST credentials on Node.
-4. `SLACK_TAG_MODEL` as the offline/dev fallback.
+1. `agent.model` from the runtime config store. This explicit pin is the normal path and is never silently changed by provider keys.
+2. `SLACK_TAG_MODEL` only when the profile is unpinned, as an offline/dev fallback.
 
-If none resolve, initialization fails with an error naming the missing env vars. Seed config is written once into an empty state DB; everything after that is `/admin` edits, applied to new threads without a restart.
+If neither exists, initialization fails with an error that tells the operator to pin a model in `/admin`. Seed config is written once into an empty state DB; existing installs are not migrated. On first boot, Cloudflare seeds Default pinned to `cloudflare/@cf/zai-org/glm-5.2`; Node seeds Default unpinned so local operators pick a model or set the fallback.
 
 ## Good to know
 
-- **Free-tier caps are hard errors.** Workers AI allows ~10K Neurons/day and Durable Objects 100K row writes/day. A busy workspace needs a paid plan, or an `ANTHROPIC_API_KEY` — which moves model spend off Workers AI entirely.
-- **The keyless model has no declared context window.** Non-catalog `cloudflare/*` models (including the default `@cf/zai-org/glm-5.2`) resolve through the binding without one, so threshold auto-compaction is disabled and long DM transcripts grow unbounded. Set `ANTHROPIC_API_KEY` or pin a catalog model for a bounded, auto-compacting context.
+- **Free-tier caps are hard errors.** Workers AI allows ~10K Neurons/day and Durable Objects 100K row writes/day. A busy workspace needs a paid plan, or a provider key plus profile pins that move model spend off Workers AI.
+- **The keyless model has no declared context window.** Non-catalog `cloudflare/*` models (including the default `@cf/zai-org/glm-5.2`) resolve through the binding without one, so threshold auto-compaction is disabled and long DM transcripts grow unbounded. Add a provider key and pin a catalog model, such as Claude or GPT, for bounded, auto-compacting context.
 - **Single workspace.** One deploy serves one workspace via a bot token. There is no multi-workspace OAuth distribution yet.
 - **`/admin` auth is a token.** A bearer token with a cookie session — no SSO. An optional Cloudflare Access layer is on the roadmap below.
 - **Updates are manual.** The Deploy button clones the repo (it does not fork), so there is no upstream-sync button. Durable Object migrations are append-only, so state survives a re-deploy of a newer version.

@@ -1,4 +1,4 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import { AddressInfo } from 'node:net';
 
 /**
@@ -17,6 +17,11 @@ import { AddressInfo } from 'node:net';
 
 export const STUB_REPLY_MARKER = 'stub-reply::glm-parity-marker';
 export const RAW_PROVIDER_ERROR_MARKER = 'raw_provider_error_marker';
+export const FAKE_PROVIDER_KEYS = {
+  anthropic: 'anthropic-valid-key',
+  openai: 'openai-valid-key',
+  openrouter: 'openrouter-valid-key',
+} as const;
 
 /**
  * Scripted tool-call triggers (Stage 4, part c). When a provider request's
@@ -240,10 +245,8 @@ export class FakeSlackBackend {
   /** fetch-compatible function that routes into the shared core. */
   asFetch(): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url =
-        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      const bodyString = init?.body == null ? '' : String(init.body);
-      const result = this.route(url, bodyString);
+      const request = input instanceof Request ? input : new Request(input, init);
+      const result = this.route(request.url, await request.clone().text(), headersObject(request.headers));
       if (result.rawBody !== undefined) {
         return new Response(result.rawBody, {
           status: result.status,
@@ -265,7 +268,7 @@ export class FakeSlackBackend {
         if (this.tryStreamDelayedProvider(req.url ?? '/', bodyString, res)) {
           return;
         }
-        const result = this.route(req.url ?? '/', bodyString);
+        const result = this.route(req.url ?? '/', bodyString, normalizeNodeHeaders(req.headers));
         if (result.rawBody !== undefined) {
           res.writeHead(result.status, { 'content-type': result.contentType ?? 'text/plain' });
           res.end(result.rawBody);
@@ -456,7 +459,11 @@ export class FakeSlackBackend {
     this.finalPostFailedOnce = false;
   }
 
-  private route(url: string, bodyString: string): RouteResult {
+  private route(
+    url: string,
+    bodyString: string,
+    headers: Record<string, string> = {},
+  ): RouteResult {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
 
     // Control surface (never recorded to the wire log): reconfigure or reset the
@@ -479,19 +486,30 @@ export class FakeSlackBackend {
     // Anthropic-messages surface (Stage 4, part b). The official Anthropic SDK
     // posts to `<base>/v1/messages` and pi-ai parses the SSE event stream.
     const isAnthropicMessages = !isSlack && pathname.endsWith('/v1/messages');
-    const method = isSlack
-      ? pathname.slice(apiIndex + '/api/'.length)
-      : isOpenAiCompletions
-        ? 'chat/completions'
-        : isAnthropicMessages
-          ? 'messages'
-          : 'provider.run';
+    let method: string;
+    if (isSlack) {
+      method = pathname.slice(apiIndex + '/api/'.length);
+    } else if (isOpenAiCompletions) {
+      method = 'chat/completions';
+    } else if (isAnthropicMessages) {
+      method = 'messages';
+    } else if (this.isProviderModelsPath(pathname)) {
+      method = 'models';
+    } else if (this.isOpenRouterAuthPath(pathname)) {
+      method = 'auth/key';
+    } else {
+      method = 'provider.run';
+    }
     const body = decodeWireBody(bodyString);
 
     const entry: WireEntry = { kind: isSlack ? 'slack' : 'provider', method, url, body };
     this.wireLog.push(entry);
 
     if (!isSlack) {
+      const providerAdmin = this.providerAdminResponse(pathname, headers);
+      if (providerAdmin) {
+        return providerAdmin;
+      }
       if (isOpenAiCompletions) {
         return this.openAiCompletionsResponse(body);
       }
@@ -505,6 +523,129 @@ export class FakeSlackBackend {
     // fake rejected (a rejected `{ ok:false }` makes the real WebClient throw).
     entry.ok = slackBody.ok !== false;
     return { status: 200, body: slackBody };
+  }
+
+  private providerAdminResponse(
+    pathname: string,
+    headers: Record<string, string>,
+  ): RouteResult | null {
+    if (pathname === '/v1/models') {
+      return this.anthropicModelsResponse(headers);
+    }
+    if (pathname === '/openai/v1/models') {
+      return this.openAiModelsResponse(headers);
+    }
+    if (pathname === '/openrouter/auth/key') {
+      return this.openRouterAuthResponse(headers);
+    }
+    if (pathname === '/openrouter/models') {
+      return this.openRouterModelsResponse();
+    }
+    if (pathname.endsWith('/ai/models/search')) {
+      return {
+        status: 200,
+        body: {
+          result: [
+            { id: '11111111-1111-4111-8111-111111111111', name: '@cf/moonshotai/kimi-k2.6' },
+            { id: '22222222-2222-4222-8222-222222222222', name: '@cf/zai-org/glm-5.2' },
+          ],
+        },
+      };
+    }
+    return null;
+  }
+
+  private isProviderModelsPath(pathname: string): boolean {
+    return (
+      pathname === '/v1/models' ||
+      pathname === '/openai/v1/models' ||
+      pathname === '/openrouter/models' ||
+      pathname.endsWith('/ai/models/search')
+    );
+  }
+
+  private isOpenRouterAuthPath(pathname: string): boolean {
+    return pathname === '/openrouter/auth/key';
+  }
+
+  private anthropicModelsResponse(headers: Record<string, string>): RouteResult {
+    if (
+      headers['x-api-key'] !== FAKE_PROVIDER_KEYS.anthropic ||
+      headers['anthropic-version'] !== '2023-06-01'
+    ) {
+      return {
+        status: 401,
+        body: {
+          type: 'error',
+          error: { type: 'authentication_error', message: 'invalid x-api-key' },
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        data: [
+          { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
+          { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
+        ],
+      },
+    };
+  }
+
+  private openAiModelsResponse(headers: Record<string, string>): RouteResult {
+    if (bearer(headers) !== FAKE_PROVIDER_KEYS.openai) {
+      return {
+        status: 401,
+        body: {
+          error: {
+            message: 'Incorrect API key provided',
+            type: 'invalid_request_error',
+            code: 'invalid_api_key',
+          },
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        object: 'list',
+        data: [
+          { id: 'gpt-4.1', object: 'model', owned_by: 'openai' },
+          { id: 'text-embedding-3-large', object: 'model', owned_by: 'openai' },
+          { id: 'gpt-4.1-mini', object: 'model', owned_by: 'openai' },
+          { id: 'whisper-1', object: 'model', owned_by: 'openai' },
+        ],
+      },
+    };
+  }
+
+  private openRouterAuthResponse(headers: Record<string, string>): RouteResult {
+    if (bearer(headers) !== FAKE_PROVIDER_KEYS.openrouter) {
+      return { status: 401, body: { error: { message: 'invalid OpenRouter key' } } };
+    }
+    return { status: 200, body: { data: { label: 'fake-openrouter-key', usage: 0 } } };
+  }
+
+  private openRouterModelsResponse(): RouteResult {
+    return {
+      status: 200,
+      body: {
+        data: [
+          {
+            id: 'anthropic/claude-sonnet-4',
+            name: 'Claude Sonnet 4',
+            context_length: 200000,
+            pricing: { prompt: '0.000003', completion: '0.000015' },
+          },
+          {
+            id: 'meta-llama/llama-3.3-70b-instruct',
+            name: 'Llama 3.3 70B Instruct',
+            context_length: 131072,
+            pricing: { prompt: '0.00000013', completion: '0.0000004' },
+          },
+        ],
+      },
+    };
   }
 
   private slackResponse(method: string, body: Record<string, unknown>): Record<string, unknown> {
@@ -924,6 +1065,27 @@ function coerceFormValue(value: string): unknown {
     }
   }
   return value;
+}
+
+function headersObject(headers: Headers): Record<string, string> {
+  return Object.fromEntries([...headers.entries()].map(([key, value]) => [key.toLowerCase(), value]));
+}
+
+function normalizeNodeHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (Array.isArray(value)) {
+      normalized[key.toLowerCase()] = value.join(', ');
+    } else if (value !== undefined) {
+      normalized[key.toLowerCase()] = value;
+    }
+  }
+  return normalized;
+}
+
+function bearer(headers: Record<string, string>): string | undefined {
+  const match = headers.authorization?.match(/^Bearer (.+)$/);
+  return match?.[1];
 }
 
 function delay(ms: number): Promise<void> {

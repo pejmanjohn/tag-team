@@ -84,11 +84,10 @@ export const laneB: Lane = {
     const slackBotUserId =
       config.botUserId === undefined ? 'U_BOT' : (config.botUserId ?? '');
 
-    // Scrub ambient provider credentials: model resolution prefers real creds
-    // over the SLACK_TAG_MODEL fallback, so a developer/CI shell with
-    // ANTHROPIC_API_KEY or Cloudflare creds exported would silently route
-    // every scenario's provider traffic to the live API instead of the stub.
-    // A scenario that needs them can re-add via `config.env` (spreads last).
+    // Scrub ambient provider credentials so provider-key availability never
+    // leaks from a developer/CI shell into scenarios. Scenario model routing is
+    // explicit via pinned local-stub models, with SLACK_TAG_MODEL left only for
+    // the one unpinned fallback scenario.
     const ambientEnv = { ...process.env };
     delete ambientEnv.ANTHROPIC_API_KEY;
     delete ambientEnv.ANTHROPIC_BASE_URL;

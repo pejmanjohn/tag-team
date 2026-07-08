@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 
 import { renderAdminPage } from '../src/admin/page.ts';
+import { seededAgents, seededAssignments } from '../src/config/seed.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -153,38 +154,101 @@ function defaultAssignments(): AssignmentFixture[] {
   ];
 }
 
+type ProviderSummaryFixture = { id: string; status: 'env' | 'stored' | 'missing'; modelCount: number | null };
+type ModelProviderFixture = {
+  id: string;
+  configured: boolean;
+  source: string;
+  suggestions: string[];
+};
+
 function runAdminPageHarness(
   options: {
     assignments?: AssignmentFixture[];
     slackConnection?: SlackConnectionFixture;
     slackChannels?: SlackChannelsFixture;
     putIsMember?: boolean;
+    cloudflare?: boolean;
+    agents?: unknown[];
+    providers?: ProviderSummaryFixture[];
+    openrouterFavorites?: string[];
+    openrouterModels?: Array<{ id: string; context_length?: number; pricing?: Record<string, string> }>;
+    workersAiFavorites?: string[];
+    workersAiModels?: Array<{ id: string }>;
+    providerKeyReject?: { status: number; detail: string };
+    modelProviders?: ModelProviderFixture[];
+    effectiveError?: { status: number; error: string; message?: string };
+    agentWriteError?: { status: number; error: string; message?: string };
   } = {},
 ): {
   app: FakeElement;
   modalRoot: FakeElement;
+  favContainers: Record<string, FakeElement>;
   listeners: Record<string, Listener>;
   putAssignments: unknown[];
   slackPosts: unknown[];
   channelListCalls: string[];
+  providerKeyPosts: Array<{ id: string; key: string }>;
+  providerKeyDeletes: string[];
+  favoritesPuts: Array<{ id: string; favorites: string[] }>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
   const modalRoot: FakeElement = { innerHTML: '' };
+  const favContainers: Record<string, FakeElement> = {};
   const listeners: Record<string, Listener> = {};
   const putAssignments: unknown[] = [];
   const slackPosts: unknown[] = [];
   const channelListCalls: string[] = [];
+  const providerKeyPosts: Array<{ id: string; key: string }> = [];
+  const providerKeyDeletes: string[] = [];
+  const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
   const slackChannels = options.slackChannels;
   const putIsMember = options.putIsMember;
+  // Captured out here because the fetch parameter below is also named `options`
+  // (the request init) and would otherwise shadow these harness fixtures.
+  const agentsFixture = options.agents;
+  const providerKeyReject = options.providerKeyReject;
+  const modelProviders = options.modelProviders;
+  const effectiveError = options.effectiveError;
+  const agentWriteError = options.agentWriteError;
   let resolveOpsEffective: (() => void) | undefined;
+
+  // Mutable provider state so a POST/DELETE key flips the /admin/api/providers
+  // status the next loadSettings() reads (mirrors the real endpoint).
+  const providerState: ProviderSummaryFixture[] =
+    options.providers ?? [
+      { id: 'anthropic', status: 'stored', modelCount: 10 },
+      { id: 'openai', status: 'missing', modelCount: null },
+      { id: 'openrouter', status: 'env', modelCount: null },
+      { id: 'workers-ai', status: options.cloudflare ? 'env' : 'missing', modelCount: null },
+    ];
+  const favoritesState: Record<string, string[]> = {
+    openrouter: options.openrouterFavorites ?? ['anthropic/claude-sonnet-4', 'openai/gpt-4.1'],
+    'workers-ai': options.workersAiFavorites ?? ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.6'],
+  };
+  const modelsState: Record<string, unknown[]> = {
+    openrouter:
+      options.openrouterModels ??
+      [
+        { id: 'anthropic/claude-sonnet-4', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' } },
+        { id: 'openai/gpt-4.1', context_length: 1047576, pricing: { prompt: '0.000002', completion: '0.000008' } },
+        { id: 'meta-llama/llama-3.3-70b-instruct', context_length: 131072, pricing: { prompt: '0.00000013', completion: '0.0000004' } },
+      ],
+    'workers-ai': options.workersAiModels ?? [{ id: '@cf/zai-org/glm-5.2' }, { id: '@cf/moonshotai/kimi-k2.7-code' }],
+  };
 
   const document = {
     getElementById(id: string) {
       if (id === 'app') return app;
       if (id === 'modal-root') return modalRoot;
+      // The favorites search re-renders only its own results container; hand it a
+      // tracked fake element so a keystroke's filtered output is observable.
+      if (id.startsWith('fav-results-')) {
+        return (favContainers[id] ??= { innerHTML: '' });
+      }
       return null;
     },
     querySelector() {
@@ -197,8 +261,23 @@ function runAdminPageHarness(
 
   const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
-    if (path === '/admin/api/agents') {
-      return Promise.resolve(jsonResponse({ agents: [releaseAgent, opsAgent] }));
+    if (path === '/admin/api/agents' && method === 'GET') {
+      return Promise.resolve(jsonResponse({ agents: agentsFixture ?? [releaseAgent, opsAgent] }));
+    }
+    if (path === '/admin/api/agents' && method === 'POST') {
+      if (agentWriteError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: agentWriteError.error,
+              ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+            },
+            agentWriteError.status,
+          ),
+        );
+      }
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      return Promise.resolve(jsonResponse({ agent: body }, 201));
     }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
@@ -243,7 +322,63 @@ function runAdminPageHarness(
       );
     }
     if (path === '/admin/api/models') {
-      return Promise.resolve(jsonResponse({ automatic: { label: 'Automatic', value: null }, providers: [] }));
+      return Promise.resolve(jsonResponse({ providers: modelProviders ?? [], defaultModels: {} }));
+    }
+    if (path === '/admin/api/providers') {
+      return Promise.resolve(jsonResponse({ providers: providerState.map((p) => ({ ...p })) }));
+    }
+    const favMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/favorites$/);
+    if (favMatch) {
+      const id = favMatch[1] as string;
+      if (method === 'PUT') {
+        const body = JSON.parse(options?.body ?? '{}') as { favorites: string[] };
+        favoritesPuts.push({ id, favorites: body.favorites });
+        favoritesState[id] = body.favorites;
+        return Promise.resolve(jsonResponse({ provider: id, favorites: body.favorites }));
+      }
+      return Promise.resolve(jsonResponse({ provider: id, favorites: favoritesState[id] ?? [] }));
+    }
+    const modelsMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/models$/);
+    if (modelsMatch) {
+      const id = modelsMatch[1] as string;
+      return Promise.resolve(jsonResponse({ provider: id, models: modelsState[id] ?? [], cached: false }));
+    }
+    const keyMatch = path.match(/^\/admin\/api\/providers\/([^/]+)\/key$/);
+    if (keyMatch) {
+      const id = keyMatch[1] as string;
+      const entry = providerState.find((p) => p.id === id);
+      if (method === 'DELETE') {
+        providerKeyDeletes.push(id);
+        if (entry) {
+          entry.status = 'missing';
+          entry.modelCount = null;
+        }
+        return Promise.resolve(
+          jsonResponse({ ok: true, provider: { id, status: 'missing', modelCount: null }, pinnedProfileCount: 0 }),
+        );
+      }
+      const body = JSON.parse(options?.body ?? '{}') as { key?: string };
+      providerKeyPosts.push({ id, key: body.key ?? '' });
+      if (providerKeyReject) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: 'provider_key_rejected',
+              provider: id,
+              status: providerKeyReject.status,
+              detail: providerKeyReject.detail,
+            },
+            422,
+          ),
+        );
+      }
+      if (entry) {
+        entry.status = 'stored';
+        entry.modelCount = 2;
+      }
+      return Promise.resolve(
+        jsonResponse({ ok: true, provider: { id, status: 'stored', modelCount: 2 }, models: [{ id: 'm1' }, { id: 'm2' }] }),
+      );
     }
     if (path === '/admin/api/slack-connection' && method === 'POST') {
       slackPosts.push(JSON.parse(options?.body ?? '{}'));
@@ -275,6 +410,17 @@ function runAdminPageHarness(
         : Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
     if (path.startsWith('/admin/api/effective-config?')) {
+      if (effectiveError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: effectiveError.error,
+              ...(effectiveError.message ? { message: effectiveError.message } : {}),
+            },
+            effectiveError.status,
+          ),
+        );
+      }
       const params = new URLSearchParams(path.slice(path.indexOf('?') + 1));
       const channelId = params.get('channelId');
       if (channelId === 'C_OPS') {
@@ -290,7 +436,7 @@ function runAdminPageHarness(
   };
 
   vm.runInNewContext(
-    inlineScript(),
+    inlineScriptFor(options.cloudflare ?? false),
     {
       document,
       fetch,
@@ -314,15 +460,38 @@ function runAdminPageHarness(
   return {
     app,
     modalRoot,
+    favContainers,
     listeners,
     putAssignments,
     slackPosts,
     channelListCalls,
+    providerKeyPosts,
+    providerKeyDeletes,
+    favoritesPuts,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
     },
   };
+}
+
+// IS_CLOUDFLARE is baked into the inline script at render time from
+// isCloudflareTarget() (globalThis.navigator.userAgent). The Workers AI row is
+// binding-only, so a Cloudflare-target harness renders it by masquerading the
+// navigator just for the renderAdminPage() call, then restoring it.
+function inlineScriptFor(cloudflare: boolean): string {
+  if (!cloudflare) return inlineScript();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { userAgent: 'Cloudflare-Workers' },
+    configurable: true,
+  });
+  try {
+    return inlineScript();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
 }
 
 function disconnectedSlackFixture(): SlackConnectionFixture {
@@ -365,19 +534,109 @@ test('admin page renders channel labels, profile secondary text, and singular ch
 
   assert.match(harness.app.innerHTML, /<span class="chan-name">#eng-releases<\/span>/);
   // Rail secondary text is the attached profile's name (per the design mockups);
-  // the channel ID secondary lives on the modal Channels tab rows instead.
+  // the channel ID secondary lives on the Profiles "Used in" rows instead.
   assert.match(harness.app.innerHTML, /<span class="chan-meta">Release Profile<\/span>/);
   assert.match(harness.app.innerHTML, /<h1 class="page-title mono-title">#eng-releases<\/h1>/);
   assert.match(harness.app.innerHTML, /used in 1 channel/);
 
   const click = harness.listeners.click;
   assert.ok(click);
+  // Profiles is now a main-panel destination (the modal was retired): opening it
+  // swaps the main panel to the overview, and each card carries its usage meta.
   click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
-  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'channels' }) });
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Profiles<\/h1>/);
+  assert.match(harness.app.innerHTML, /<span class="pcard-name">Release Profile<\/span>/);
+  assert.match(harness.app.innerHTML, /used in 1 channel/);
 
-  assert.match(harness.modalRoot.innerHTML, /#eng-releases/);
-  assert.match(harness.modalRoot.innerHTML, /C0EXR3L9T · has channel instructions/);
-  assert.match(harness.modalRoot.innerHTML, /Used in 1 channel/);
+  // Drilling into a profile opens the full-page editor whose "Used in" section
+  // names the channel it answers in (with its channel ID) and offers Detach.
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Used in<\/h2>/);
+  assert.match(harness.app.innerHTML, /<span class="b-name mono"[^>]*>#eng-releases<\/span>/);
+  assert.match(harness.app.innerHTML, /<span class="b-meta">C0EXR3L9T<\/span>/);
+  assert.match(harness.app.innerHTML, /data-action="detach-channel"/);
+});
+
+test('the profile editor blocks delete while assigned and confirms disable everywhere', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+
+  // Delete is disabled while the profile is attached (the server 409s too); the
+  // hint names the blocking channel.
+  assert.match(harness.app.innerHTML, /<button type="button" class="btn btn-danger" data-action="delete-profile" disabled>Delete profile<\/button>/);
+  assert.match(harness.app.innerHTML, /is attached to 1 channel/);
+
+  // Turning the enable toggle off on an assigned profile asks for confirmation
+  // (stops-everywhere) before it commits, rather than silently disabling it.
+  change({
+    target: {
+      checked: false,
+      closest: () => null,
+      getAttribute(name: string) {
+        return name === 'data-action' ? 'profile-enable-toggle' : null;
+      },
+    } as unknown as FakeTarget,
+  });
+  assert.match(harness.app.innerHTML, /Disable Release Profile\?/);
+  assert.match(harness.app.innerHTML, /data-action="disable-confirm"/);
+  assert.match(harness.app.innerHTML, /data-action="disable-keep"/);
+});
+
+test('New profile opens a blank create screen and validation gates save', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+
+  // The create screen is a full page (not a modal): back link, ghost-example
+  // instructions placeholder, the one registered tool, and Create/Cancel.
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">New profile<\/h1>/);
+  assert.match(harness.app.innerHTML, /Answer teammates/);
+  assert.match(harness.app.innerHTML, /lookup_channel_brief/);
+  assert.match(harness.app.innerHTML, /data-action="cancel-create"/);
+  assert.match(harness.app.innerHTML, /data-action="save-profile"/);
+
+  // A blank name is rejected inline with the verbatim server-side string; no
+  // agents request is issued.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  assert.match(harness.app.innerHTML, /Name is required\./);
+});
+
+test('profile save and access summary render server model-resolution messages', async () => {
+  const serverMessage = 'No model pinned for agent agent_no_model. Pin a model in /admin (Profiles -> Model).';
+  const harness = runAdminPageHarness({
+    agentWriteError: { status: 422, error: 'model_not_resolvable', message: serverMessage },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-name' }, 'No Model') });
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Answer from the fixture.') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No model pinned for agent agent_no_model/);
+  assert.doesNotMatch(harness.app.innerHTML, /model_not_resolvable/);
+
+  const accessHarness = runAdminPageHarness({
+    effectiveError: { status: 422, error: 'model_not_resolvable', message: serverMessage },
+  });
+  await flushAsync();
+
+  assert.match(accessHarness.app.innerHTML, /<p class="field-label">Configuration issue<\/p>/);
+  assert.match(accessHarness.app.innerHTML, /No model pinned for agent agent_no_model/);
+  assert.doesNotMatch(accessHarness.app.innerHTML, /<p class="field-label">No enabled profile<\/p>/);
 });
 
 test('selecting a channel re-renders after effective config finishes resolving', async () => {
@@ -424,12 +683,14 @@ test('channel rail groups concrete assignments under their own workspace headers
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /<div class="ws-row">▾ T_DESIGN<\/div>/);
-  assert.match(harness.app.innerHTML, /<div class="ws-row">▾ T_DEMO<\/div>/);
+  // Each workspace group renders a ws-row header (chevron icon + the workspace
+  // id, since only the connected workspace carries a friendly team name).
+  assert.match(harness.app.innerHTML, /<div class="ws-row"><svg[^>]*>.*?<\/svg>T_DESIGN<\/div>/);
+  assert.match(harness.app.innerHTML, /<div class="ws-row"><svg[^>]*>.*?<\/svg>T_DEMO<\/div>/);
 
-  const designHeader = harness.app.innerHTML.indexOf('<div class="ws-row">▾ T_DESIGN</div>');
+  const designHeader = harness.app.innerHTML.indexOf('>T_DESIGN</div>');
   const designChannel = harness.app.innerHTML.indexOf('<span class="chan-name">#eng-releases</span>');
-  const demoHeader = harness.app.innerHTML.indexOf('<div class="ws-row">▾ T_DEMO</div>');
+  const demoHeader = harness.app.innerHTML.indexOf('>T_DEMO</div>');
   const demoChannel = harness.app.innerHTML.indexOf('<span class="chan-name">#demo-channel</span>');
   assert.ok(designHeader >= 0 && designHeader < designChannel);
   assert.ok(designChannel < demoHeader);
@@ -498,22 +759,23 @@ test('add-channel submit PUTs the connected workspace id and surfaces the invite
       channelLabel: 'secret-room',
     },
   ]);
-  // isMember:false from the server drives the invite reminder.
+  // isMember:false from the server drives the invite reminder (channel-specific).
   assert.match(harness.app.innerHTML, /Invite Tag to finish/);
-  assert.match(harness.app.innerHTML, /Invite @Tag to the channel in Slack/);
+  assert.match(harness.app.innerHTML, /Invite @Tag to #secret-room in Slack/);
 });
 
-test('add-channel affordance is disabled until Slack is connected', async () => {
+test('the rail and add-channel affordance stay gated until Slack is connected', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
-  // The rail + empty-state Add buttons are disabled with a connect-first hint,
-  // and no channel-list fetch happens while disconnected.
-  assert.match(harness.app.innerHTML, /data-action="toggle-add-channel" disabled/);
-  assert.match(harness.app.innerHTML, /Connect Slack first/);
+  // Disconnected: the whole screen is the Connect stepper — no rail, no
+  // add-channel affordance anywhere, and no channel-list fetch.
+  assert.match(harness.app.innerHTML, /Connect Slack/);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="toggle-add-channel"/);
+  assert.doesNotMatch(harness.app.innerHTML, /class="rail"/);
   assert.equal(harness.channelListCalls.length, 0);
 });
 
@@ -546,14 +808,17 @@ test('add-channel manual fallback reveals a server-validated channel-ID input', 
   ]);
 });
 
-test('admin page renders the Slack-connection wizard when credentials are missing', async () => {
+test('admin page renders the first-run Connect stepper when credentials are missing', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: disconnectedSlackFixture(),
   });
   await flushAsync();
 
+  // Step 1 is the whole screen: header, not-connected chip, the manifest Create
+  // link (events URL prefilled), and the workspace-pick warning.
   assert.match(harness.app.innerHTML, /Connect Slack/);
+  assert.match(harness.app.innerHTML, /Two steps: create the app/);
   assert.match(harness.app.innerHTML, /Not connected/);
   // The manifest deep-link is the server-provided URL, attribute-escaped.
   assert.match(
@@ -561,15 +826,24 @@ test('admin page renders the Slack-connection wizard when credentials are missin
     /href="https:\/\/api\.slack\.com\/apps\?new_app=1&amp;manifest_json=%7B%22a%22%3A1%7D"/,
   );
   assert.match(harness.app.innerHTML, /tag\.example\.dev\/channels\/slack\/events/);
-  // Mixed provenance: the env-provided signing secret is read-only, the
-  // missing bot token asks for a paste.
+  assert.match(harness.app.innerHTML, /pick a workspace/);
+  // Credential provenance lives in a collapsed disclosure (env signing secret is
+  // read-only), and the paste fields belong to step 2 — hidden until advanced.
   assert.match(harness.app.innerHTML, /configured via environment/);
+  assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'advance-slack-step' }) });
+  await flushAsync();
+
+  // Step 2: the two paired paste fields + the live-validation hint.
   assert.match(harness.app.innerHTML, /name="botToken"/);
   assert.match(harness.app.innerHTML, /name="signingSecret"/);
-  assert.match(harness.app.innerHTML, /first signed Slack event/);
+  assert.match(harness.app.innerHTML, /first real Slack event/);
 });
 
-test('admin page shows a compact connected card without a paste form when Slack is connected', async () => {
+test('connected + zero channels shows the funnel with credentials demoted to a disclosure', async () => {
   const harness = runAdminPageHarness({
     assignments: [],
     slackConnection: {
@@ -581,8 +855,11 @@ test('admin page shows a compact connected card without a paste form when Slack 
   });
   await flushAsync();
 
-  assert.match(harness.app.innerHTML, /Slack connection/);
+  // The funnel is the focus; the header chip flips to Connected and credential
+  // provenance is demoted to a collapsed "Connection details" disclosure.
+  assert.match(harness.app.innerHTML, /Choose where Tag answers/);
   assert.match(harness.app.innerHTML, /Connected/);
+  assert.match(harness.app.innerHTML, /Connection details/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
   assert.doesNotMatch(harness.app.innerHTML, /Connect Slack/);
 });
@@ -619,7 +896,8 @@ test('wizard paste-back submit posts both credentials and renders the connected 
 
   // Trimmed on the client before the POST.
   assert.deepEqual(harness.slackPosts, [{ botToken: 'xoxb-pasted', signingSecret: 'pasted-secret' }]);
-  assert.match(harness.app.innerHTML, /Connected to Acme Inc as @tag\./);
+  // The connected funnel's dismissable success toast names the team + bot.
+  assert.match(harness.app.innerHTML, /Connected to <b[^>]*>Acme Inc<\/b> as <span[^>]*>@tag<\/span>/);
   assert.doesNotMatch(harness.app.innerHTML, /name="botToken"/);
 });
 
@@ -643,4 +921,280 @@ test('wizard submit validates empty fields inline without posting', async () => 
 
   assert.equal(harness.slackPosts.length, 0);
   assert.match(harness.app.innerHTML, /Bot token is required\./);
+});
+
+// ---- Settings: model providers (cards 13-14) --------------------------------
+
+function inputTarget(attributes: Record<string, string>, value: string): FakeTarget & { value: string } {
+  return {
+    value,
+    closest(selector: string) {
+      return selector === '[data-action]' ? this : null;
+    },
+    getAttribute(name: string) {
+      return attributes[name] ?? null;
+    },
+  };
+}
+
+test('admin topbar exposes a Settings destination that lands on the model-providers page', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  // The Settings sibling sits next to Profiles in the topbar (inactive until opened).
+  assert.match(harness.app.innerHTML, /data-action="open-settings">Settings<\/button>/);
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Settings<\/h1>/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Model providers<\/h2>/);
+  // The active-state styling is the soft ember tint (.nav-active), no weight change.
+  assert.match(harness.app.innerHTML, /class="btn btn-soft nav-active" data-action="open-settings">Settings<\/button>/);
+});
+
+test('Settings renders the three key-provider rows and hides Workers AI on the Node target', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  // Anthropic (stored) shows the Stored chip + model count; OpenAI (missing) offers Add key.
+  assert.match(html, /<span class="prov-name">Anthropic<\/span>/);
+  assert.match(html, /Stored<\/span><span class="hint">Saved here · 10 models available<\/span>/);
+  assert.match(html, /<span class="prov-name">OpenAI<\/span>/);
+  assert.match(html, /Missing<\/span>/);
+  assert.match(html, /data-action="prov-add-key" data-provider="openai"/);
+  // OpenRouter (env) is read-only — no change/remove — with the favorites manager.
+  assert.match(html, /Via environment<\/span><span class="hint">Read-only/);
+  assert.match(html, /in your picker<\/span>/);
+  assert.match(html, /Models in your picker/);
+  assert.doesNotMatch(html, /data-action="prov-remove" data-provider="openrouter"/);
+  // Workers AI is binding-only: absent on Node.
+  assert.doesNotMatch(html, /<span class="prov-name">Workers AI<\/span>/);
+});
+
+test('Settings validates a pasted key and collapses the row to a stored status', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'openai' }) });
+  assert.match(harness.app.innerHTML, /data-action="prov-validate" data-provider="openai"/);
+  input({ target: inputTarget({ 'data-action': 'prov-key-input', 'data-provider': 'openai' }, 'sk-live-openai') });
+  click({ target: actionTarget({ 'data-action': 'prov-validate', 'data-provider': 'openai' }) });
+  await flushAsync();
+
+  assert.deepEqual(harness.providerKeyPosts, [{ id: 'openai', key: 'sk-live-openai' }]);
+  // The row collapsed: OpenAI now reports Stored with the primed model count.
+  assert.match(harness.app.innerHTML, /<span class="prov-name">OpenAI<\/span>/);
+  assert.match(harness.app.innerHTML, /Stored<\/span><span class="hint">Saved here · 2 models available<\/span>/);
+});
+
+test('Settings surfaces a rejected key verbatim in the raw-error block and stores nothing', async () => {
+  const harness = runAdminPageHarness({
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null },
+      { id: 'openrouter', status: 'env', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+    providerKeyReject: { status: 401, detail: 'authentication_error: invalid x-api-key' },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'anthropic' }) });
+  input({ target: inputTarget({ 'data-action': 'prov-key-input', 'data-provider': 'anthropic' }, 'sk-ant-bad') });
+  click({ target: actionTarget({ 'data-action': 'prov-validate', 'data-provider': 'anthropic' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Anthropic rejected the key\. Nothing was stored/);
+  assert.match(html, /<div class="raw-error">GET \/v1\/models → 401 authentication_error: invalid x-api-key<\/div>/);
+  // Provider still Missing (nothing stored) and the paste field is still open.
+  assert.match(html, /Missing<\/span>/);
+});
+
+test('Settings remove-key confirmation names the pinned profiles and the honest consequence', async () => {
+  const harness = runAdminPageHarness({
+    assignments: [],
+    agents: [
+      { id: 'agent_a', name: 'Support Triage', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-sonnet-4-6', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
+      { id: 'agent_b', name: 'Release Scribe', description: '', instructions: 'x', enabled: true, model: 'anthropic/claude-haiku-4-5', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
+      { id: 'agent_c', name: 'Ops', description: '', instructions: 'x', enabled: true, model: 'openai/gpt-4.1', defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' }, allowedTools: [] },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'anthropic' }) });
+  const html = harness.app.innerHTML;
+  assert.match(html, /Remove the stored Anthropic key\?/);
+  assert.match(html, /<b[^>]*>2 profiles<\/b> are pinned to an Anthropic model/);
+  assert.match(html, /Support Triage/);
+  assert.match(html, /Release Scribe/);
+  assert.match(html, /the model provider call failed before completion/);
+  assert.match(html, /ANTHROPIC_API_KEY<\/span> in the environment, if set, still applies/);
+  assert.doesNotMatch(html, /Ops/); // the OpenAI-pinned profile is not implicated
+
+  // Confirming removes the stored key.
+  click({ target: actionTarget({ 'data-action': 'prov-remove-confirm', 'data-provider': 'anthropic' }) });
+  await flushAsync();
+  assert.deepEqual(harness.providerKeyDeletes, ['anthropic']);
+});
+
+test('Settings OpenRouter favorites manager searches, stars, and persists to the picker', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  // Two OpenRouter favorites render with ctx + input/output pricing metas.
+  const html = harness.app.innerHTML;
+  assert.match(html, /In your picker &middot; 2 starred/);
+  assert.match(html, /<span class="fav-model">anthropic\/claude-sonnet-4<\/span><span class="fav-meta">200K ctx · <span class="price">\$3\.00 \/ \$15\.00<\/span> \/M<\/span>/);
+  assert.match(html, /1M ctx/);
+
+  // Typing filters the live list into the results container (unstarred matches only).
+  input({ target: inputTarget({ 'data-action': 'fav-search', 'data-provider': 'openrouter' }, 'llama') });
+  const results = harness.favContainers['fav-results-openrouter'];
+  assert.ok(results);
+  assert.match(results.innerHTML, /Results for &ldquo;llama&rdquo;/);
+  assert.match(results.innerHTML, /meta-llama\/llama-3\.3-70b-instruct/);
+  assert.match(results.innerHTML, /131K ctx/);
+
+  // Starring the match persists the whole array and grows the picker group.
+  click({ target: actionTarget({ 'data-action': 'fav-star', 'data-provider': 'openrouter', 'data-model': 'meta-llama/llama-3.3-70b-instruct' }) });
+  await flushAsync();
+  assert.equal(harness.favoritesPuts.length, 1);
+  assert.deepEqual(harness.favoritesPuts[0], {
+    id: 'openrouter',
+    favorites: ['anthropic/claude-sonnet-4', 'openai/gpt-4.1', 'meta-llama/llama-3.3-70b-instruct'],
+  });
+  assert.match(harness.app.innerHTML, /In your picker &middot; 3 starred/);
+});
+
+test('Settings shows the Workers AI row on the Cloudflare target with no per-row metas', async () => {
+  const harness = runAdminPageHarness({ cloudflare: true });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /<span class="prov-name">Workers AI<\/span>/);
+  assert.match(html, /Always available<\/span><span class="hint">Keyless · billed in Neurons/);
+  assert.match(html, /via the Workers AI binding/);
+  // Seed default renders as a starred favorite, provider-native, with NO meta.
+  assert.match(html, /<span class="fav-model">@cf\/zai-org\/glm-5\.2<\/span><\/div>/);
+  assert.match(html, /keep it starred to keep that default in the picker/);
+});
+
+test('the profile Model picker shows the node-unpinned pick-a-model prompt with the SLACK_TAG_MODEL note', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  // A blank profile has no pinned model — the field opens in the prompt state.
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  const html = harness.app.innerHTML;
+
+  assert.match(html, /placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
+  // The empty-ish combo carries the offline/dev fallback note and a Settings link.
+  assert.match(html, /set <span class="mono"[^>]*>SLACK_TAG_MODEL<\/span>/);
+  assert.match(html, /as an offline\/dev fallback so an unpinned profile still replies/);
+  assert.match(html, /data-action="open-settings">Manage providers &amp; models in Settings &nearr;<\/button>/);
+});
+
+test('the profile Model picker labels Cloudflare binding suggestions as workers-ai', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'cloudflare',
+        configured: true,
+        source: 'Workers AI binding',
+        suggestions: ['cloudflare/@cf/zai-org/glm-5.2'],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+
+  assert.match(harness.app.innerHTML, /<div class="combo-group">workers-ai<span class="src">· Workers AI binding<\/span><\/div>/);
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">cloudflare<span/);
+});
+
+test('the profile Model picker suppresses configured provider groups with no favorites', async () => {
+  const harness = runAdminPageHarness({
+    modelProviders: [
+      {
+        id: 'openrouter',
+        configured: true,
+        source: 'via OPENROUTER_API_KEY',
+        suggestions: [],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+
+  assert.doesNotMatch(harness.app.innerHTML, /<div class="combo-group">openrouter/);
+  assert.doesNotMatch(harness.app.innerHTML, /no providers configured/);
+  assert.match(harness.app.innerHTML, /Star models in Settings to add picker shortcuts/);
+});
+
+test('node-target Default seed is unpinned and its profile editor renders the pick-a-model prompt', async () => {
+  const defaultProfile = seededAgents.find((agent) => agent.id === 'agent_default');
+  assert.ok(defaultProfile);
+  assert.equal(defaultProfile.model, undefined);
+
+  const harness = runAdminPageHarness({
+    agents: seededAgents,
+    assignments: seededAssignments,
+    providers: [
+      { id: 'anthropic', status: 'missing', modelCount: null },
+      { id: 'openai', status: 'missing', modelCount: null },
+      { id: 'openrouter', status: 'missing', modelCount: null },
+      { id: 'workers-ai', status: 'missing', modelCount: null },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_default' }) });
+  const html = harness.app.innerHTML;
+
+  assert.match(html, /<h1 class="page-title">Default<\/h1>/);
+  assert.match(html, /value="" role="combobox" aria-expanded="true" placeholder="Pick a model &mdash; none pinned"/);
+  assert.match(html, /<div class="combo-group">no providers configured<\/div>/);
+  assert.match(html, /SLACK_TAG_MODEL/);
+  assert.match(html, /as an offline\/dev fallback so an unpinned profile still replies/);
 });

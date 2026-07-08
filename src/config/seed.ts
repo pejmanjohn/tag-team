@@ -1,4 +1,5 @@
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
+import { isCloudflareTarget } from './runtime-target.ts';
 
 // Canonical default model pair for a brand-new profile, shared by the seed and
 // surfaced to the admin UI via /admin/api/models so the client never hardcodes
@@ -8,8 +9,15 @@ export const SEED_DEFAULT_MODELS = {
   'workers-ai': '@cf/zai-org/glm-5.2',
 } as const;
 
-export const seededAgents: CustomAgentConfig[] = [
-  {
+export const SEED_CLOUDFLARE_MODEL_PIN = `cloudflare/${SEED_DEFAULT_MODELS['workers-ai']}`;
+
+export type SeedTarget = 'cloudflare' | 'node';
+
+export function createSeededAgents(
+  options: { target?: SeedTarget } = {},
+): CustomAgentConfig[] {
+  const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
+  const defaultAgent: CustomAgentConfig = {
     id: 'agent_default',
     name: 'Default',
     description:
@@ -26,10 +34,14 @@ export const seededAgents: CustomAgentConfig[] = [
         'Never invent facts.',
       ].join(' '),
     enabled: true,
+    ...(target === 'cloudflare' ? { model: SEED_CLOUDFLARE_MODEL_PIN } : {}),
     defaultModels: { ...SEED_DEFAULT_MODELS },
     allowedTools: ['lookup_channel_brief'],
-  },
-];
+  };
+  return [defaultAgent];
+}
+
+export const seededAgents: CustomAgentConfig[] = createSeededAgents();
 
 export const seededAssignments: ChannelAssignment[] = [
   {

@@ -11,6 +11,10 @@ export function recordRegisteredProvider(id: string): void {
   appRegistered.add(id);
 }
 
+export function forgetRegisteredProvider(id: string): void {
+  appRegistered.delete(id);
+}
+
 interface ProviderCatalogEntry {
   id: string;
   envVars: readonly string[];
@@ -48,8 +52,8 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
 ];
 
 // Flue's binding-backed Workers AI provider: exists ONLY on the Cloudflare
-// target, where the AI binding makes it available with zero credentials (the
-// keyless-deploy default model resolves through it — see model-policy.ts).
+// target, where the AI binding makes it available with zero credentials. The
+// Cloudflare first-boot seed explicitly pins Default to this provider.
 // Listed only there so the node lane's provider registry is unchanged.
 const CF_BINDING_PROVIDER: ProviderCatalogEntry = {
   id: 'cloudflare',

@@ -1,6 +1,7 @@
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
-import { seededAgents, seededAssignments } from './seed.ts';
+import { SEED_CLOUDFLARE_MODEL_PIN, seededAgents, seededAssignments } from './seed.ts';
+import { isCloudflareTarget } from './runtime-target.ts';
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -332,6 +333,21 @@ export class ConfigStoreLogic {
           if (!columns.some((column) => column.name === 'channel_label')) {
             db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT');
           }
+        },
+      },
+      {
+        version: 2,
+        up: (db) => {
+          if (!isCloudflareTarget()) {
+            return;
+          }
+          db.run(
+            `UPDATE config_agents
+             SET model = ?
+             WHERE id = ? AND model IS NULL`,
+            SEED_CLOUDFLARE_MODEL_PIN,
+            'agent_default',
+          );
         },
       },
     ];

@@ -84,6 +84,7 @@ test('channelLabel survives the REAL production path: store -> effective config 
         description: 'Real-path label test.',
         instructions: 'Answer plainly.',
         enabled: true,
+        model: 'local-stub/parity-stub-1',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
         allowedTools: ['lookup_channel_brief'],
       },
@@ -104,7 +105,7 @@ test('channelLabel survives the REAL production path: store -> effective config 
       'T_REAL',
       'C0LABELCHAN',
       { agents: store, assignments: store },
-      { SLACK_TAG_MODEL: 'local-stub/parity-stub-1' } as NodeJS.ProcessEnv,
+      { SLACK_TAG_MODEL: undefined } as NodeJS.ProcessEnv,
     );
     assert.equal(effective.channelLabel, 'eng-releases');
 

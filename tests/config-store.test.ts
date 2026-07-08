@@ -7,7 +7,12 @@ import { test } from 'node:test';
 
 import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
 import { resolveAssignment, surfaceForChannelId } from '../src/config/resolver.ts';
-import { seededAgents, seededAssignments } from '../src/config/seed.ts';
+import {
+  SEED_CLOUDFLARE_MODEL_PIN,
+  createSeededAgents,
+  seededAgents,
+  seededAssignments,
+} from '../src/config/seed.ts';
 import { getConfigStore } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ChannelAssignment, CustomAgentConfig } from '../src/config/types.ts';
@@ -16,6 +21,20 @@ import { withEnv } from './helpers/env.ts';
 function tempDbPath(): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), 'tag-team-config-store-'));
   return { dir, path: join(dir, 'state.db') };
+}
+
+function withNavigatorUserAgent<T>(userAgent: string, run: () => T): T {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent },
+  });
+  try {
+    return run();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
 }
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -125,6 +144,7 @@ test('default seed ships a single Default profile plus the direct-message wildca
   const [defaultProfile] = agents;
   assert.ok(defaultProfile);
   assert.equal(defaultProfile.id, 'agent_default');
+  assert.equal(defaultProfile.model, undefined);
   assert.match(defaultProfile.instructions, /general-purpose Slack assistant/i);
   assert.match(defaultProfile.instructions, /never invent facts/i);
 
@@ -144,6 +164,14 @@ test('default seed ships a single Default profile plus the direct-message wildca
   assert.equal(seededAgents.length, 1);
   assert.equal(seededAssignments.length, 1);
   store.close();
+});
+
+test('Cloudflare first-boot seed pins Default to the keyless Workers AI binding model', () => {
+  const [defaultProfile] = createSeededAgents({ target: 'cloudflare' });
+
+  assert.ok(defaultProfile);
+  assert.equal(defaultProfile.id, 'agent_default');
+  assert.equal(defaultProfile.model, SEED_CLOUDFLARE_MODEL_PIN);
 });
 
 test('SqliteConfigStore survives restart on a file database', async () => {
@@ -259,6 +287,73 @@ test('SqliteConfigStore migrates pre-existing assignment tables to support chann
   }
 });
 
+test('Cloudflare v2 migration pins an unpinned legacy Default', async () => {
+  const { dir, path } = tempDbPath();
+
+  try {
+    const legacy = new DatabaseSync(path);
+    legacy.exec(`
+      CREATE TABLE config_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      CREATE TABLE config_agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        instructions TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        model TEXT,
+        default_models_json TEXT NOT NULL,
+        allowed_tools_json TEXT NOT NULL
+      );
+      CREATE TABLE config_assignments (
+        workspace_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        channel_label TEXT,
+        channel_prompt_addendum TEXT,
+        PRIMARY KEY (workspace_id, channel_id)
+      );
+    `);
+    legacy
+      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+      .run('schema_version', '1');
+    legacy
+      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+      .run('config_seeded_v1', '2026-07-07T00:00:00.000Z');
+    const legacyDefault = agent({ id: 'agent_default', name: 'Default' });
+    legacy
+      .prepare(
+        `INSERT INTO config_agents (
+          id, name, description, instructions, enabled, model,
+          default_models_json, allowed_tools_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        legacyDefault.id,
+        legacyDefault.name,
+        legacyDefault.description,
+        legacyDefault.instructions,
+        1,
+        null,
+        JSON.stringify(legacyDefault.defaultModels),
+        JSON.stringify(legacyDefault.allowedTools),
+      );
+    legacy.close();
+
+    const store = withNavigatorUserAgent(
+      'Cloudflare-Workers',
+      () => new SqliteConfigStore(path, { agents: [], assignments: [] }),
+    );
+    assert.equal((await store.getAgent('agent_default')).model, SEED_CLOUDFLARE_MODEL_PIN);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test(':memory: config stores are isolated by connection', async () => {
   const first = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const second = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
@@ -339,9 +434,15 @@ test('assignment lookup precedence is exact, workspace wildcard, channel wildcar
 test('getConfigStore writes are visible to later slack-thread initializations in the same process', async () => {
   const { dir, path } = tempDbPath();
 
-  await withEnv({ SLACK_STATE_DB_PATH: path, SLACK_TAG_MODEL: 'local-stub/cache-test' }, async () => {
+  await withEnv({ SLACK_STATE_DB_PATH: path, SLACK_TAG_MODEL: undefined }, async () => {
     const store = getConfigStore();
-    await store.createAgent(agent({ id: 'agent_cached', instructions: 'Cached store instructions.' }));
+    await store.createAgent(
+      agent({
+        id: 'agent_cached',
+        instructions: 'Cached store instructions.',
+        model: 'local-stub/cache-test',
+      }),
+    );
     await store.putAssignment(
       assignment({ workspaceId: 'T_CACHE', channelId: 'C_CACHE', agentId: 'agent_cached' }),
     );

@@ -222,7 +222,40 @@ test('admin API rejects unpinned agents that cannot resolve a model in the curre
         });
 
         assert.equal(response.status, 422);
-        assert.deepEqual(await response.json(), { error: 'model_not_resolvable' });
+        assert.deepEqual(await response.json(), {
+          error: 'model_not_resolvable',
+          message:
+            'No model pinned for agent agent_admin. Pin a model in /admin (Profiles -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-profile fallback.',
+        });
+      },
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API accepts an unpinned agent only when SLACK_TAG_MODEL is set', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    await withEnv(
+      {
+        SLACK_TAG_MODEL: 'local-stub/admin-fallback',
+        ANTHROPIC_API_KEY: 'anthropic-key',
+        CLOUDFLARE_API_TOKEN: 'cf-token',
+        CLOUDFLARE_ACCOUNT_ID: 'cf-account',
+      },
+      async () => {
+        const app = appWithAdmin(store);
+        const createdAgent = agent();
+        delete createdAgent.model;
+        const response = await app.request('/admin/api/agents', {
+          method: 'POST',
+          headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+          body: JSON.stringify(createdAgent),
+        });
+
+        assert.equal(response.status, 201);
+        assert.deepEqual(await response.json(), { agent: createdAgent });
       },
     );
   } finally {
@@ -290,7 +323,11 @@ test('admin API rejects patches that leave an agent without a resolvable model',
         });
 
         assert.equal(response.status, 422);
-        assert.deepEqual(await response.json(), { error: 'model_not_resolvable' });
+        assert.deepEqual(await response.json(), {
+          error: 'model_not_resolvable',
+          message:
+            'No model pinned for agent agent_admin. Pin a model in /admin (Profiles -> Model), or set SLACK_TAG_MODEL for offline/dev unpinned-profile fallback.',
+        });
       },
     );
   } finally {
@@ -471,10 +508,12 @@ test('admin API exposes model suggestions for configured provider sources', asyn
 
         assert.equal(response.status, 200);
         const body = (await response.json()) as {
-          automatic: { label: string; value: null };
+          automatic?: unknown;
           providers: Array<{ id: string; configured: boolean; suggestions: string[] }>;
+          defaultModels: unknown;
         };
-        assert.deepEqual(body.automatic, { label: 'Automatic (provider default)', value: null });
+        assert.equal(body.automatic, undefined);
+        assert.ok(body.defaultModels);
         assert.equal(
           body.providers.some(
             (provider) =>
@@ -552,30 +591,69 @@ test('effective config endpoint resolves through the runtime assignment path', a
   }
 });
 
+test('effective config endpoint uses SLACK_TAG_MODEL for an unpinned profile on node', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    await withEnv(
+      {
+        SLACK_TAG_MODEL: 'local-stub/node-unpinned-fallback',
+        ANTHROPIC_API_KEY: undefined,
+        CLOUDFLARE_API_TOKEN: undefined,
+        CLOUDFLARE_ACCOUNT_ID: undefined,
+      },
+      async () => {
+        const app = appWithAdmin(store);
+        const unpinnedAgent = agent({
+          id: 'agent_unpinned',
+          name: 'Unpinned Agent',
+        });
+        delete unpinnedAgent.model;
+        await store.createAgent(unpinnedAgent);
+        await store.putAssignment({
+          workspaceId: 'T_ADMIN',
+          channelId: 'C_UNPINNED',
+          agentId: 'agent_unpinned',
+          enabled: true,
+        });
+
+        const response = await app.request(
+          '/admin/api/effective-config?workspaceId=T_ADMIN&channelId=C_UNPINNED',
+          { headers: auth(ADMIN_TOKEN) },
+        );
+
+        assert.equal(response.status, 200);
+        const body = (await response.json()) as {
+          config: { model: string; provider: string; profile: { model: string | null } };
+        };
+        assert.equal(body.config.profile.model, null);
+        assert.equal(body.config.model, 'local-stub/node-unpinned-fallback');
+        assert.equal(body.config.provider, 'local-stub');
+      },
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API clears a pinned model with PATCH model: null', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
-  const previousFallback = process.env.SLACK_TAG_MODEL;
-  process.env.SLACK_TAG_MODEL = 'local-stub/fallback-after-clear';
   try {
-    const app = appWithAdmin(store);
-    await store.createAgent(agent());
+    await withEnv({ SLACK_TAG_MODEL: 'local-stub/fallback-after-clear' }, async () => {
+      const app = appWithAdmin(store);
+      await store.createAgent(agent());
 
-    const response = await app.request('/admin/api/agents/agent_admin', {
-      method: 'PATCH',
-      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
-      body: JSON.stringify({ model: null }),
+      const response = await app.request('/admin/api/agents/agent_admin', {
+        method: 'PATCH',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({ model: null }),
+      });
+
+      assert.equal(response.status, 200);
+      const body = (await response.json()) as { agent: CustomAgentConfig };
+      assert.equal('model' in body.agent, false);
+      assert.equal('model' in (await store.getAgent('agent_admin')), false);
     });
-
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as { agent: CustomAgentConfig };
-    assert.equal('model' in body.agent, false);
-    assert.equal('model' in (await store.getAgent('agent_admin')), false);
   } finally {
-    if (previousFallback === undefined) {
-      delete process.env.SLACK_TAG_MODEL;
-    } else {
-      process.env.SLACK_TAG_MODEL = previousFallback;
-    }
     store.close();
   }
 });

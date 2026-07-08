@@ -28,6 +28,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import vm from 'node:vm';
 
 import {
   REPO_ROOT,
@@ -64,6 +65,14 @@ function check(ok, label, detail = '') {
   const status = ok ? 'ok  ' : 'FAIL';
   console.log(`  [${status}] ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failures.push(label);
+}
+
+function sameArray(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
 }
 
 function buildCloudflareTarget() {
@@ -118,6 +127,9 @@ function writeDevVars(fakeUrl) {
       `TAG_ADMIN_TOKEN=${ADMIN_TOKEN}`,
       `SLACK_API_URL=${fakeUrl}/api/`,
       `LOCAL_STUB_URL=${fakeUrl}/v1`,
+      `ANTHROPIC_API_URL=${fakeUrl}`,
+      `OPENAI_API_URL=${fakeUrl}/openai/v1`,
+      `OPENROUTER_API_URL=${fakeUrl}/openrouter`,
       '',
     ].join('\n'),
   );
@@ -181,6 +193,76 @@ async function adminFetch(baseUrl, path, init = {}) {
     body = text;
   }
   return { status: response.status, body };
+}
+
+async function adminPageHtml(baseUrl) {
+  const response = await fetch(`${baseUrl}/admin`, {
+    headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+  });
+  return response.text();
+}
+
+async function renderAdminWithWorkerdState(baseUrl) {
+  const html = await adminPageHtml(baseUrl);
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (!script) {
+    throw new Error('admin page did not include its inline script');
+  }
+  const app = { innerHTML: '' };
+  const elements = new Map([['app', app]]);
+  const listeners = {};
+  const document = {
+    getElementById(id) {
+      if (!elements.has(id)) {
+        elements.set(id, { innerHTML: '', value: '', disabled: false });
+      }
+      return elements.get(id);
+    },
+    querySelector(selector) {
+      if (selector === '.main-inner') return app;
+      return null;
+    },
+    addEventListener(type, listener) {
+      listeners[type] = listener;
+    },
+  };
+  const authenticatedFetch = (path, options = {}) => {
+    const url = path.startsWith('http') ? path : `${baseUrl}${path}`;
+    return fetch(url, {
+      ...options,
+      headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        ...(options.headers ?? {}),
+      },
+    });
+  };
+  vm.runInNewContext(
+    script,
+    {
+      document,
+      fetch: authenticatedFetch,
+      console,
+      URLSearchParams,
+      FormData: class {
+        constructor(form) {
+          this.form = form;
+        }
+        get(name) {
+          return this.form?.__formData?.[name] ?? null;
+        }
+      },
+    },
+    { filename: 'admin-workerd-inline.js' },
+  );
+  const timeoutMs = 5000;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (app.innerHTML.length > 0) {
+      return { html: app.innerHTML, listeners };
+    }
+    await delay(10);
+  }
+  throw new Error(`admin inline script did not render within ${timeoutMs}ms`);
 }
 
 /** Ready = the admin API answers from the DO-backed store (workerd + DO up). */
@@ -286,7 +368,7 @@ async function main() {
   // first-boot Durable Object.
   rmSync(PERSIST_DIR, { recursive: true, force: true });
 
-  const { FakeSlackBackend, STUB_REPLY_MARKER } = await loadFake();
+  const { FakeSlackBackend, FAKE_PROVIDER_KEYS, STUB_REPLY_MARKER } = await loadFake();
   // The fake reports this workspace identity from auth.test (so the wizard
   // persists it) and serves these channels from conversations.list/info (so the
   // Add-channel proxy and the assignment-PUT validation have real fixtures).
@@ -317,6 +399,12 @@ async function main() {
       agentIds.includes('agent_default'),
       'DO-backed config store served the seeded agent',
       agentIds.join(','),
+    );
+    const defaultAgent = agents.find((agent) => agent.id === 'agent_default');
+    check(
+      defaultAgent?.model === 'cloudflare/@cf/zai-org/glm-5.2',
+      'Cloudflare seed pins Default to the keyless Workers AI model',
+      String(defaultAgent?.model),
     );
 
     // --- First-run wizard flow (no Slack creds anywhere yet) ---------------
@@ -352,6 +440,20 @@ async function main() {
         wizard.body.manifestUrl.includes(encodeURIComponent(expectedRequestUrl)),
       'manifest deep-link carries the substituted request_url',
     );
+    const firstRunAdmin = await renderAdminWithWorkerdState(baseUrl);
+    check(
+      firstRunAdmin.html.includes('Connect Slack') &&
+        firstRunAdmin.html.includes('Create your Slack app') &&
+        firstRunAdmin.html.includes('Events URL (already in the manifest)') &&
+        firstRunAdmin.html.includes('data-action="advance-slack-step"'),
+      'first-run admin render shows the step-1 Connect stepper',
+    );
+    check(
+      firstRunAdmin.html.length > 0 &&
+        !firstRunAdmin.html.includes('Choose where Tag answers') &&
+        !firstRunAdmin.html.includes('data-action="toggle-add-channel"'),
+      'first-run admin render does not show the connected funnel',
+    );
 
     // Paste-back: validated live against the fake Slack's auth.test, then
     // persisted in the DO settings store (bot user id comes from auth.test).
@@ -383,6 +485,117 @@ async function main() {
       postWizard.body?.teamId === WORKSPACE,
       'wizard persisted the connected team id',
       String(postWizard.body?.teamId),
+    );
+    const connectedAdmin = await renderAdminWithWorkerdState(baseUrl);
+    check(
+      connectedAdmin.html.includes('Choose where Tag answers') &&
+        connectedAdmin.html.includes('data-action="toggle-add-channel"'),
+      'post-wizard admin render shows the connected channel funnel',
+    );
+    check(
+      connectedAdmin.html.length > 0 &&
+        !connectedAdmin.html.includes('Connect Slack') &&
+        !connectedAdmin.html.includes('class="stepper"'),
+      'post-wizard admin render removes the Connect stepper',
+    );
+
+    // --- Settings/model-provider screen APIs --------------------------------
+
+    for (const [provider, key] of Object.entries(FAKE_PROVIDER_KEYS)) {
+      const savedProvider = await adminFetch(baseUrl, `/admin/api/providers/${provider}/key`, {
+        method: 'POST',
+        body: JSON.stringify({ key }),
+      });
+      check(
+        savedProvider.status === 200 && savedProvider.body?.provider?.status === 'stored',
+        `provider-key save validated and stored ${provider}`,
+        `HTTP ${savedProvider.status} ${savedProvider.body?.provider?.status ?? ''}`,
+      );
+    }
+    const providers = await adminFetch(baseUrl, '/admin/api/providers');
+    const providerSummaries = Object.fromEntries(
+      (providers.body?.providers ?? []).map((provider) => [provider.id, provider]),
+    );
+    check(
+      providerSummaries.anthropic?.status === 'stored' && providerSummaries.anthropic?.modelCount === 2,
+      'providers GET reports Anthropic key stored with two fake models',
+      JSON.stringify(providerSummaries.anthropic),
+    );
+    check(
+      providerSummaries.openai?.status === 'stored' && providerSummaries.openai?.modelCount === 2,
+      'providers GET reports OpenAI key stored with two chat models',
+      JSON.stringify(providerSummaries.openai),
+    );
+    check(
+      providerSummaries.openrouter?.status === 'stored' && providerSummaries.openrouter?.modelCount === 2,
+      'providers GET reports OpenRouter key stored with two fake models',
+      JSON.stringify(providerSummaries.openrouter),
+    );
+
+    const seededWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites');
+    const expectedWorkersSeed = [
+      '@cf/zai-org/glm-5.2',
+      '@cf/moonshotai/kimi-k2.6',
+      '@cf/openai/gpt-oss-120b',
+      '@cf/meta/llama-3.3-70b-instruct',
+    ];
+    check(
+      seededWorkersFavorites.status === 200 &&
+        sameArray(seededWorkersFavorites.body?.favorites, expectedWorkersSeed),
+      'Workers AI favorites GET seeds the four default picker models',
+      JSON.stringify(seededWorkersFavorites.body?.favorites),
+    );
+    const nextWorkersFavorites = ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.7-code'];
+    const savedWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites', {
+      method: 'PUT',
+      body: JSON.stringify({ favorites: nextWorkersFavorites }),
+    });
+    const roundTripWorkersFavorites = await adminFetch(baseUrl, '/admin/api/providers/workers-ai/favorites');
+    check(
+      savedWorkersFavorites.status === 200 &&
+        sameArray(roundTripWorkersFavorites.body?.favorites, nextWorkersFavorites),
+      'Workers AI favorites PUT/GET round-trips curated models',
+      JSON.stringify(roundTripWorkersFavorites.body?.favorites),
+    );
+    const nextOpenRouterFavorites = ['anthropic/claude-sonnet-4', 'meta-llama/llama-3.3-70b-instruct'];
+    const savedOpenRouterFavorites = await adminFetch(baseUrl, '/admin/api/providers/openrouter/favorites', {
+      method: 'PUT',
+      body: JSON.stringify({ favorites: nextOpenRouterFavorites }),
+    });
+    const roundTripOpenRouterFavorites = await adminFetch(baseUrl, '/admin/api/providers/openrouter/favorites');
+    check(
+      savedOpenRouterFavorites.status === 200 &&
+        sameArray(roundTripOpenRouterFavorites.body?.favorites, nextOpenRouterFavorites),
+      'OpenRouter favorites PUT/GET round-trips curated models',
+      JSON.stringify(roundTripOpenRouterFavorites.body?.favorites),
+    );
+
+    const profileCreate = await adminFetch(baseUrl, '/admin/api/agents', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: 'agent_cf_smoke_profile',
+        name: 'CF Smoke Profile',
+        description: 'Created by the CF smoke gate.',
+        instructions: 'Answer only from the CF smoke gate fixture.',
+        enabled: true,
+        model: 'anthropic/claude-sonnet-4-6',
+        defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' },
+        allowedTools: ['lookup_channel_brief'],
+      }),
+    });
+    check(
+      profileCreate.status === 201 &&
+        profileCreate.body?.agent?.id === 'agent_cf_smoke_profile' &&
+        profileCreate.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
+      'profile create endpoint saves an explicit model pin',
+      `HTTP ${profileCreate.status}`,
+    );
+    const createdProfile = await adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke_profile');
+    check(
+      createdProfile.status === 200 &&
+        createdProfile.body?.agent?.model === 'anthropic/claude-sonnet-4-6',
+      'profile create round-trips through the profile GET endpoint',
+      `HTTP ${createdProfile.status}`,
     );
 
     // --- Add-channel proxy: server-side conversations.list through workerd ---

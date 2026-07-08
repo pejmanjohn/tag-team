@@ -132,7 +132,7 @@ test('slack-thread freezes effective config per durable thread id', async () => 
     await withEnv(
       {
         SLACK_STATE_DB_PATH: dbPath,
-        SLACK_TAG_MODEL: 'local-stub/snapshot-unit-fallback',
+        SLACK_TAG_MODEL: undefined,
         ANTHROPIC_API_KEY: undefined,
         CLOUDFLARE_API_TOKEN: undefined,
         CLOUDFLARE_ACCOUNT_ID: undefined,

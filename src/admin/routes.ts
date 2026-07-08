@@ -22,6 +22,30 @@ import {
   UnknownAgentError,
 } from '../config/errors.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
+import {
+  applyResolvedProviderKeys,
+  deleteProviderApiKey,
+  describeProviderKeySources,
+  isProviderKeyId,
+  PROVIDER_KEY_IDS,
+  resolveProviderApiKey,
+  saveProviderApiKey,
+  type ProviderKeySource,
+} from '../config/provider-keys.ts';
+import {
+  cachedProviderModelCount,
+  getProviderFavorites,
+  isAdminProviderId,
+  isFavoriteProviderId,
+  listProviderModels,
+  primeProviderModelCache,
+  ProviderKeyRejectedError,
+  ProviderModelsUnavailableError,
+  ProviderUnreachableError,
+  putProviderFavorites,
+  validateProviderApiKey,
+  type AdminProviderId,
+} from '../config/provider-models.ts';
 import { knownProviderIds, listRuntimeModelProviders } from '../config/providers.ts';
 import { SEED_DEFAULT_MODELS } from '../config/seed.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -178,18 +202,161 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);
+  app.use('/admin/api/*', async (c, next) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    await applyResolvedProviderKeys(platformEnv, settings(c));
+    return next();
+  });
 
   app.get('/admin', (c) => c.html(renderAdminPage()));
 
   app.get('/admin/api/agents', async (c) => c.json({ agents: await store(c).listAgents() }));
 
-  app.get('/admin/api/models', (c) =>
-    c.json({
-      automatic: { label: 'Automatic (provider default)', value: null },
-      providers: modelProviders(),
-      defaultModels: SEED_DEFAULT_MODELS,
-    }),
-  );
+  // The profile picker's single source of provider groups + suggestions. Anthropic
+  // and OpenAI keep their small dynamic catalogs; OpenRouter and the keyless
+  // Workers AI binding show ONLY the user's starred favorites (curated in the
+  // Settings managers), so this route folds those favorites into their
+  // suggestions — the per-provider search/favorites endpoints stay the editors.
+  app.get('/admin/api/models', async (c) => {
+    const settingsStore = settings(c);
+    const providers = await Promise.all(
+      modelProviders().map(async (provider) => {
+        if (provider.id === 'openrouter') {
+          const favorites = await getProviderFavorites('openrouter', settingsStore);
+          return { ...provider, suggestions: favorites.map((model) => `openrouter/${model}`) };
+        }
+        // The binding-backed CF provider surfaces as `cloudflare`; its favorites
+        // live under the `workers-ai` key and pin as `cloudflare/<model>`.
+        if (provider.id === 'cloudflare') {
+          const favorites = await getProviderFavorites('workers-ai', settingsStore);
+          return { ...provider, suggestions: favorites.map((model) => `cloudflare/${model}`) };
+        }
+        return provider;
+      }),
+    );
+    return c.json({ providers, defaultModels: SEED_DEFAULT_MODELS });
+  });
+
+  app.get('/admin/api/providers', async (c) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const sources = await describeProviderKeySources(platformEnv, settingsStore);
+    return c.json({
+      providers: [
+        ...PROVIDER_KEY_IDS.map((id) => providerSummary(id, sources[id])),
+        providerSummary('workers-ai', workersAiStatus(platformEnv)),
+      ],
+    });
+  });
+
+  app.post('/admin/api/providers/:id/key', async (c) => {
+    const id = c.req.param('id');
+    if (!isProviderKeyId(id)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
+    const apiKey = providerApiKeyFromBody(await readJson(c.req));
+    if (!apiKey) {
+      return invalidRequest(c);
+    }
+
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    const current = await resolveProviderApiKey(id, platformEnv, settingsStore);
+    if (current.source === 'env') {
+      return c.json({ error: 'provider_key_read_only', provider: id }, 409);
+    }
+
+    try {
+      const models = await validateProviderApiKey(id, apiKey);
+      await saveProviderApiKey(id, apiKey, platformEnv, settingsStore);
+      primeProviderModelCache(id, models);
+      return c.json({
+        ok: true,
+        provider: providerSummary(id, 'stored'),
+        models,
+      });
+    } catch (err) {
+      if (err instanceof ProviderKeyRejectedError) {
+        return c.json(
+          {
+            error: 'provider_key_rejected',
+            provider: err.provider,
+            status: err.status,
+            detail: err.detail,
+          },
+          422,
+        );
+      }
+      if (err instanceof ProviderUnreachableError) {
+        return c.json({ error: 'provider_unreachable', provider: err.provider }, 502);
+      }
+      if (err instanceof ProviderModelsUnavailableError) {
+        return c.json({ error: err.code, provider: err.provider }, 502);
+      }
+      return internalError(c, err);
+    }
+  });
+
+  app.delete('/admin/api/providers/:id/key', async (c) => {
+    const id = c.req.param('id');
+    if (!isProviderKeyId(id)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const resolved = await deleteProviderApiKey(id, platformEnv, settings(c));
+    return c.json({
+      ok: true,
+      provider: providerSummary(id, resolved.source),
+      pinnedProfileCount: await countPinnedProfiles(store(c), id),
+    });
+  });
+
+  app.get('/admin/api/providers/:id/models', async (c) => {
+    const id = c.req.param('id');
+    if (!isAdminProviderId(id)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
+    try {
+      const platformEnv = c.env as PlatformEnv | undefined;
+      const result = await listProviderModels(id, {
+        store: settings(c),
+        refresh: c.req.query('refresh') === '1',
+        ...(platformEnv !== undefined ? { env: platformEnv } : {}),
+      });
+      return c.json({ provider: id, models: result.models, cached: result.cached });
+    } catch (err) {
+      if (err instanceof ProviderModelsUnavailableError) {
+        return c.json({ error: err.code, provider: err.provider }, err.status as 409 | 502);
+      }
+      if (err instanceof ProviderUnreachableError) {
+        return c.json({ error: 'provider_unreachable', provider: err.provider }, 502);
+      }
+      return internalError(c, err);
+    }
+  });
+
+  app.get('/admin/api/providers/:id/favorites', async (c) => {
+    const id = c.req.param('id');
+    if (!isFavoriteProviderId(id)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
+    return c.json({ provider: id, favorites: await getProviderFavorites(id, settings(c)) });
+  });
+
+  app.put('/admin/api/providers/:id/favorites', async (c) => {
+    const id = c.req.param('id');
+    if (!isFavoriteProviderId(id)) {
+      return c.json({ error: 'unknown_provider' }, 404);
+    }
+    const favorites = providerFavoritesFromBody(await readJson(c.req));
+    if (!favorites) {
+      return invalidRequest(c);
+    }
+    return c.json({
+      provider: id,
+      favorites: await putProviderFavorites(id, favorites, settings(c)),
+    });
+  });
 
   app.post('/admin/api/agents', async (c) => {
     const body = await readJson(c.req);
@@ -198,8 +365,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const agent = toAgentConfig(parsed.output);
-    if (!isModelResolvable(agent)) {
-      return c.json({ error: 'model_not_resolvable' }, 422);
+    const modelError = modelResolutionError(agent);
+    if (modelError) {
+      return modelNotResolvable(c, modelError);
     }
     try {
       const configStore = store(c);
@@ -244,10 +412,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...current,
         ...patch,
         id: agentId,
-        defaultModels: patch.defaultModels ?? current.defaultModels,
       };
-      if (!isModelResolvable(next)) {
-        return c.json({ error: 'model_not_resolvable' }, 422);
+      const modelError = modelResolutionError(next);
+      if (modelError) {
+        return modelNotResolvable(c, modelError);
       }
       return c.json({
         agent: await configStore.updateAgent(agentId, patch),
@@ -442,7 +610,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'not_found' }, 404);
       }
       if (err instanceof ModelResolutionError) {
-        return c.json({ error: 'model_not_resolvable' }, 422);
+        return modelNotResolvable(c, err);
       }
       return internalError(c, err);
     }
@@ -724,13 +892,23 @@ function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string 
   );
 }
 
-function isModelResolvable(agent: ModelResolvableAgent): boolean {
+function modelResolutionError(agent: ModelResolvableAgent): ModelResolutionError | undefined {
   try {
     resolveAgentModel(agent);
-    return true;
-  } catch {
-    return false;
+    return undefined;
+  } catch (err) {
+    if (err instanceof ModelResolutionError) {
+      return err;
+    }
+    throw err;
   }
+}
+
+function modelNotResolvable(
+  c: { json(body: { error: string; message: string }, status: 422): Response },
+  err: ModelResolutionError,
+): Response {
+  return c.json({ error: 'model_not_resolvable', message: err.message }, 422);
 }
 
 async function readJson(req: { json(): Promise<unknown> }): Promise<unknown> {
@@ -774,6 +952,73 @@ function providerWarnings(
   };
 }
 
+interface ProviderSummary {
+  id: AdminProviderId;
+  status: ProviderKeySource;
+  modelCount: number | null;
+}
+
+function providerSummary(id: AdminProviderId, status: ProviderKeySource): ProviderSummary {
+  return {
+    id,
+    status,
+    modelCount: cachedProviderModelCount(id) ?? null,
+  };
+}
+
+function workersAiStatus(env: PlatformEnv | undefined): ProviderKeySource {
+  if (hasWorkersAiBinding(env)) {
+    return 'env';
+  }
+  return process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID ? 'env' : 'missing';
+}
+
+function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {
+  const ai = env?.AI;
+  return Boolean(ai && typeof ai === 'object' && typeof (ai as { models?: unknown }).models === 'function');
+}
+
+function providerApiKeyFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') {
+    return undefined;
+  }
+  const record = body as Record<string, unknown>;
+  const value = record.apiKey ?? record.key;
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function providerFavoritesFromBody(body: unknown): string[] | undefined {
+  const raw = Array.isArray(body)
+    ? body
+    : body && typeof body === 'object' && Array.isArray((body as Record<string, unknown>).favorites)
+      ? ((body as Record<string, unknown>).favorites as unknown[])
+      : undefined;
+  if (!raw) {
+    return undefined;
+  }
+  const favorites = raw.filter((value): value is string => typeof value === 'string');
+  return favorites.length === raw.length ? favorites : undefined;
+}
+
+async function countPinnedProfiles(configStore: ConfigStore, provider: string): Promise<number> {
+  const agents = await configStore.listAgents();
+  return agents.filter((agent) => modelBelongsToProvider(agent.model, provider)).length;
+}
+
+function modelBelongsToProvider(model: string | undefined, provider: string): boolean {
+  if (!model) {
+    return false;
+  }
+  if (provider === 'workers-ai') {
+    return model.startsWith('cloudflare/') || model.startsWith('cloudflare-workers-ai/');
+  }
+  return model.startsWith(`${provider}/`);
+}
+
 // Never echo internal error text (raw SQLite messages) to API clients; log it
 // server-side and return a stable retriable status instead.
 function internalError(
@@ -794,6 +1039,7 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
       name: config.agent.name,
       description: config.agent.description,
       enabled: config.agent.enabled,
+      model: config.agent.model ?? null,
     },
     model: config.model,
     provider: config.provider,
