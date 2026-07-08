@@ -4,8 +4,11 @@
 # deploy, once the worker URL exists.
 
 # Admin token gating every /admin route (page + API). The app returns 404 for
-# /admin until this is set. Generate one with: openssl rand -hex 32
-TAG_ADMIN_TOKEN="replace-with-a-random-hex-string"
+# /admin until this is set. Any long random string works — generate one with:
+#   openssl rand -hex 32
+# Deliberately empty: the Deploy to Cloudflare button pre-fills its prompt with
+# the value written here, and a placeholder would deploy as the real token.
+TAG_ADMIN_TOKEN=""
 
 # Optional: unlock the Anthropic catalog provider for a smarter default model.
 # Without it, the seeded profiles run keyless on the Workers AI binding
