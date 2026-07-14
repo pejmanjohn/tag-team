@@ -70,6 +70,7 @@ function providerSettingsAgent(id: string, model: string) {
     model,
     defaultModels: { claude: 'anthropic/claude-sonnet-4-6', 'workers-ai': '@cf/zai-org/glm-5.2' },
     allowedTools: [],
+    skills: [],
   };
 }
 

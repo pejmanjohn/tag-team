@@ -56,6 +56,7 @@ const RELEASE_SCRIBE_PROFILE: CustomAgentConfig = {
   model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
+  skills: [],
 };
 
 const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
@@ -74,6 +75,7 @@ const EXEC_BRIEF_PROFILE: CustomAgentConfig = {
   model: PARITY_MODEL,
   defaultModels: { ...SEED_DEFAULT_MODELS },
   allowedTools: ['lookup_channel_brief'],
+  skills: [],
 };
 
 export interface Scenario {
@@ -664,6 +666,7 @@ export const scenarios: Scenario[] = [
               'workers-ai': '@cf/pinned/model',
             },
             allowedTools: [],
+            skills: [],
           },
         ],
         assignments: [
@@ -710,6 +713,7 @@ export const scenarios: Scenario[] = [
               'workers-ai': '@cf/addendum/model',
             },
             allowedTools: [],
+            skills: [],
           },
         ],
         assignments: [
@@ -835,6 +839,7 @@ export const scenarios: Scenario[] = [
               'workers-ai': '@cf/parity/model',
             },
             allowedTools: [],
+            skills: [],
           },
         ],
         assignments: [
@@ -1049,6 +1054,7 @@ export const scenarios: Scenario[] = [
               'workers-ai': '@cf/parity/model',
             },
             allowedTools: [],
+            skills: [],
           },
         ],
         assignments: [
@@ -1254,6 +1260,7 @@ export const scenarios: Scenario[] = [
               'workers-ai': '@cf/snapshot/model',
             },
             allowedTools: [],
+            skills: [],
           },
         ],
         // The '*,*' direct-message default answers DMs.
@@ -1391,6 +1398,7 @@ function snapshotScenarioConfig(agentId: string): ScenarioLaneConfig {
             'workers-ai': '@cf/snapshot/model',
           },
           allowedTools: [],
+          skills: [],
         },
       ],
       assignments: [

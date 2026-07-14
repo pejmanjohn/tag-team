@@ -28,6 +28,9 @@ interface AgentRow {
   model: string | null;
   default_models_json: string;
   allowed_tools_json: string;
+  // Nullable in the row type because pre-skills DBs may briefly surface the
+  // column as NULL before/around migration; rowToAgent coerces to [].
+  skills_json: string | null;
 }
 
 interface AssignmentRow {
@@ -99,7 +102,8 @@ export class ConfigStoreLogic {
         enabled INTEGER NOT NULL,
         model TEXT,
         default_models_json TEXT NOT NULL,
-        allowed_tools_json TEXT NOT NULL
+        allowed_tools_json TEXT NOT NULL,
+        skills_json TEXT NOT NULL DEFAULT '[]'
       )`,
     );
     db.exec(
@@ -154,7 +158,7 @@ export class ConfigStoreLogic {
     this.db.run(
       `UPDATE config_agents
        SET name = ?, description = ?, instructions = ?, enabled = ?, model = ?,
-           default_models_json = ?, allowed_tools_json = ?
+           default_models_json = ?, allowed_tools_json = ?, skills_json = ?
        WHERE id = ?`,
       next.name,
       next.description,
@@ -163,6 +167,7 @@ export class ConfigStoreLogic {
       model,
       JSON.stringify(next.defaultModels),
       JSON.stringify(next.allowedTools),
+      JSON.stringify(next.skills),
       agentId,
     );
     return this.getAgent(agentId);
@@ -305,8 +310,8 @@ export class ConfigStoreLogic {
     return this.db.run(
       `INSERT INTO config_agents (
         id, name, description, instructions, enabled, model,
-        default_models_json, allowed_tools_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        default_models_json, allowed_tools_json, skills_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       agent.name,
       agent.description,
@@ -315,6 +320,7 @@ export class ConfigStoreLogic {
       agent.model ?? null,
       JSON.stringify(agent.defaultModels),
       JSON.stringify(agent.allowedTools),
+      JSON.stringify(agent.skills ?? []),
     );
   }
 
@@ -348,6 +354,17 @@ export class ConfigStoreLogic {
             SEED_CLOUDFLARE_MODEL_PIN,
             'agent_default',
           );
+        },
+      },
+      {
+        version: 3,
+        up: (db) => {
+          // Add the per-profile skills column to DBs created before it existed.
+          // NOT NULL needs a DEFAULT so existing rows backfill to an empty list.
+          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
+          if (!columns.some((column) => column.name === 'skills_json')) {
+            db.exec("ALTER TABLE config_agents ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]'");
+          }
         },
       },
     ];
@@ -461,6 +478,10 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     ...(row.model ? { model: row.model } : {}),
     defaultModels: JSON.parse(row.default_models_json) as CustomAgentConfig['defaultModels'],
     allowedTools: JSON.parse(row.allowed_tools_json) as string[],
+    // Coerce a NULL/absent column (pre-migration read) to an empty list.
+    skills: row.skills_json
+      ? (JSON.parse(row.skills_json) as CustomAgentConfig['skills'])
+      : [],
   };
 }
 

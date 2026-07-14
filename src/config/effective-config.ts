@@ -93,6 +93,9 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         model: config.model,
         allowedTools: config.allowedTools,
         instructions: config.instructions,
+        // Skills ride inside the frozen agent; include them so an
+        // Access-summary drift check notices a skill edit vs. a live thread.
+        skills: config.agent.skills,
       }),
     )
     .digest('hex');

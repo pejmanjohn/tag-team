@@ -37,6 +37,7 @@ export function createSeededAgents(
     ...(target === 'cloudflare' ? { model: SEED_CLOUDFLARE_MODEL_PIN } : {}),
     defaultModels: { ...SEED_DEFAULT_MODELS },
     allowedTools: ['lookup_channel_brief'],
+    skills: [],
   };
   return [defaultAgent];
 }

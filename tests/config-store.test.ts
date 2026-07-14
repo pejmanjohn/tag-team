@@ -49,6 +49,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       'workers-ai': '@cf/test/model',
     },
     allowedTools: ['lookup_channel_brief'],
+    skills: [],
     ...overrides,
   };
 }
@@ -90,6 +91,94 @@ test('SqliteConfigStore round-trips agent and assignment CRUD', async () => {
   await assert.rejects(() => store.getAgent(created.id), /Unknown agent agent_test/);
 
   store.close();
+});
+
+test('SqliteConfigStore round-trips non-empty skills through create and update', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const withSkills = agent({
+    skills: [
+      {
+        name: 'incident-scribe',
+        description: 'Build a structured incident timeline.',
+        instructions: '# Incident Scribe\n\nDo the thing.',
+        enabled: true,
+      },
+      {
+        name: 'pr-explainer',
+        description: 'Explain a PR in plain language.',
+        instructions: '# PR Explainer',
+        enabled: false,
+      },
+    ],
+  });
+
+  await store.createAgent(withSkills);
+  assert.deepEqual((await store.getAgent(withSkills.id)).skills, withSkills.skills);
+
+  const nextSkills = [
+    { name: 'triage', description: 'Triage issues.', instructions: '# Triage', enabled: true },
+  ];
+  const updated = await store.updateAgent(withSkills.id, { skills: nextSkills });
+  assert.deepEqual(updated.skills, nextSkills);
+  assert.deepEqual((await store.getAgent(withSkills.id)).skills, nextSkills);
+
+  store.close();
+});
+
+test('migration backfills skills_json as [] on a pre-skills database', async () => {
+  const { dir, path } = tempDbPath();
+  try {
+    // Legacy schema: config_agents WITHOUT skills_json, schema_version = 2.
+    const legacy = new DatabaseSync(path);
+    legacy.exec('CREATE TABLE config_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    legacy.exec(
+      `CREATE TABLE config_agents (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+        instructions TEXT NOT NULL, enabled INTEGER NOT NULL, model TEXT,
+        default_models_json TEXT NOT NULL, allowed_tools_json TEXT NOT NULL)`,
+    );
+    legacy.exec(
+      `CREATE TABLE config_assignments (
+        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL, channel_label TEXT, channel_prompt_addendum TEXT,
+        PRIMARY KEY (workspace_id, channel_id))`,
+    );
+    legacy
+      .prepare(
+        `INSERT INTO config_agents
+         (id, name, description, instructions, enabled, model, default_models_json, allowed_tools_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'agent_legacy',
+        'Legacy',
+        'A pre-skills agent',
+        'Legacy instructions',
+        1,
+        null,
+        '{"claude":"anthropic/x","workers-ai":"@cf/y"}',
+        '["lookup_channel_brief"]',
+      );
+    legacy.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run('schema_version', '2');
+    legacy
+      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
+      .run('config_seeded_v1', new Date().toISOString());
+    legacy.close();
+
+    // Opening the store runs migration v3: adds skills_json, existing rows read as [].
+    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
+    const migrated = await store.getAgent('agent_legacy');
+    assert.deepEqual(migrated.skills, []);
+
+    // And the migrated row now accepts skills.
+    const withSkill = await store.updateAgent('agent_legacy', {
+      skills: [{ name: 'triage', description: 'Triage.', instructions: '# t', enabled: true }],
+    });
+    assert.equal(withSkill.skills.length, 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('SqliteConfigStore blocks deleting agents that still have assignments', async () => {
@@ -505,6 +594,7 @@ test('a disabled assignment at the winning specificity turns the channel off ins
         enabled: true,
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
         allowedTools: [],
+        skills: [],
       },
     ],
     assignments: [

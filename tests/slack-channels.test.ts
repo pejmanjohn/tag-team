@@ -46,6 +46,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
     model: 'local-stub/channels',
     defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
     allowedTools: [],
+    skills: [],
     ...overrides,
   };
 }

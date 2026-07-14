@@ -1,5 +1,19 @@
 export type ProviderId = 'claude' | 'workers-ai';
 
+/**
+ * A profile-attached skill: a named playbook the agent can load on demand.
+ * `name` must satisfy Flue's `defineSkill` rule (`^[a-z0-9]+(?:-[a-z0-9]+)*$`,
+ * ≤64) and is unique per profile; `instructions` is the SKILL.md body Flue
+ * surfaces only after the model activates the skill (progressive disclosure).
+ * Only `enabled` skills are materialized at turn time.
+ */
+export interface SkillConfig {
+  name: string;
+  description: string;
+  instructions: string;
+  enabled: boolean;
+}
+
 export interface CustomAgentConfig {
   id: string;
   name: string;
@@ -9,6 +23,7 @@ export interface CustomAgentConfig {
   model?: string;
   defaultModels: Record<ProviderId, string>;
   allowedTools: string[];
+  skills: SkillConfig[];
 }
 
 export interface ChannelAssignment {

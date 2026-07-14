@@ -35,6 +35,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       'workers-ai': '@cf/snapshot/unit',
     },
     allowedTools: [],
+    skills: [],
     ...overrides,
   };
 }

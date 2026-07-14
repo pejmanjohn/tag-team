@@ -52,6 +52,7 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
       'workers-ai': '@cf/admin/model',
     },
     allowedTools: [],
+    skills: [],
     ...overrides,
   };
 }
@@ -200,6 +201,60 @@ test('admin API validates request bodies with valibot', async () => {
   }
 });
 
+test('admin API validates skills: rejects whitespace-only description and duplicate names, trims on accept', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const post = (body: unknown) =>
+      app.request('/admin/api/agents', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    // A whitespace-only description would pass a naive minLength(1) but throws at
+    // defineSkill (which trims) — the write boundary must reject it up front.
+    const whitespace = await post(
+      agent({
+        id: 'agent_ws',
+        model: 'local-stub/x',
+        skills: [{ name: 'ok-name', description: '   ', instructions: '# body', enabled: true }],
+      }),
+    );
+    assert.equal(whitespace.status, 400);
+
+    // Duplicate skill names are a runtime turn-killer — reject at the boundary.
+    const dup = await post(
+      agent({
+        id: 'agent_dup',
+        model: 'local-stub/x',
+        skills: [
+          { name: 'dupe', description: 'a', instructions: 'x', enabled: true },
+          { name: 'dupe', description: 'b', instructions: 'y', enabled: true },
+        ],
+      }),
+    );
+    assert.equal(dup.status, 400);
+
+    // A valid skill with padded values is accepted and stored trimmed.
+    const ok = await post(
+      agent({
+        id: 'agent_ok',
+        model: 'local-stub/x',
+        skills: [
+          { name: 'good-skill', description: '  Trim me.  ', instructions: '  # body  ', enabled: true },
+        ],
+      }),
+    );
+    assert.equal(ok.status, 201);
+    const created = (await ok.json()) as { agent: { skills: Array<{ description: string; instructions: string }> } };
+    assert.equal(created.agent.skills[0]?.description, 'Trim me.');
+    assert.equal(created.agent.skills[0]?.instructions, '# body');
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API rejects unpinned agents that cannot resolve a model in the current environment', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
@@ -313,6 +368,7 @@ test('admin API rejects patches that leave an agent without a resolvable model',
             'workers-ai': '@cf/admin/model',
           },
           allowedTools: [],
+          skills: [],
         };
         await store.createAgent(unpinnedAgent);
 
@@ -549,6 +605,7 @@ test('effective config endpoint resolves through the runtime assignment path', a
         instructions: 'Base profile instructions from the admin test.',
         model: 'local-stub/effective-model',
         allowedTools: ['lookup_channel_brief'],
+        skills: [],
       }),
     );
     await store.putAssignment({

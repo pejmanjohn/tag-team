@@ -377,6 +377,49 @@ details[open].advanced summary::before {
 .adv-rows { display: flex; flex-direction: column; padding-bottom: 14px; }
 .save-bar { align-items: center; display: flex; gap: 10px; justify-content: flex-end; }
 .save-note { color: var(--text-3); font-size: 0.75rem; margin-right: auto; }
+.save-bar-sticky {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  bottom: 0;
+  box-shadow: 0 -6px 20px rgba(28, 25, 23, 0.08);
+  left: 0;
+  padding: 13px 32px calc(13px + env(safe-area-inset-bottom, 0px));
+  position: fixed;
+  right: 0;
+  z-index: 20;
+}
+.save-bar-sticky.is-clean { display: none; }
+.save-bar-inner { align-items: center; display: flex; gap: 10px; margin: 0 auto; max-width: 760px; }
+.save-bar-inner .save-note { margin-right: auto; }
+.modal-backdrop {
+  align-items: center;
+  background: rgba(28, 25, 23, 0.4);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  left: 0;
+  padding: 20px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 50;
+}
+.modal-card {
+  background: var(--bg);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(28, 25, 23, 0.28);
+  max-width: 440px;
+  padding: 20px 22px;
+  width: 100%;
+}
+.modal-title { color: var(--text); font-size: 1rem; font-weight: 600; }
+.modal-body { color: var(--text-2); font-size: 0.875rem; margin-top: 6px; }
+.modal-foot { align-items: center; display: flex; gap: 8px; margin-top: 18px; }
+.modal-foot .spacer { flex: 1; }
+@media (max-width: 720px) {
+  .modal-foot { flex-direction: column-reverse; align-items: stretch; }
+  .modal-foot .spacer { display: none; }
+}
 .error, .field-error { color: var(--danger); font-size: 0.8125rem; }
 .empty {
   align-items: flex-start;
@@ -452,6 +495,45 @@ details[open].advanced summary::before {
 .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tool-body .t-name { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; font-weight: 500; }
 .tool-body .t-desc { color: var(--text-3); font-size: 0.78125rem; }
+
+/* ---- profile custom skills ---- */
+.skill-list { display: flex; flex-direction: column; gap: 8px; }
+.skill-row {
+  align-items: center;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  display: flex;
+  gap: 12px;
+  padding: 11px 13px;
+}
+.skill-row .sk-body { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.skill-row .sk-name { align-items: center; color: var(--text); display: flex; flex-wrap: wrap; font-family: var(--mono); font-size: 0.8125rem; font-weight: 600; gap: 8px; overflow-wrap: anywhere; }
+.skill-row .sk-desc { color: var(--text-3); font-size: 0.78125rem; overflow-wrap: anywhere; }
+.badge-src {
+  background: rgba(28, 25, 23, 0.06);
+  border-radius: 999px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 0.65625rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.skill-form {
+  background: var(--well);
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+}
+.skill-form-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
+@media (max-width: 720px) {
+  .skill-row { align-items: stretch; flex-direction: column; }
+}
 
 /* ---- profile danger zone ---- */
 .danger-zone {
@@ -579,6 +661,9 @@ details[open].advanced summary::before {
   .btn-sm { font-size: 0.8125rem; padding: 6px 11px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
   .save-note { margin-right: 0; }
+  .save-bar-sticky { padding: 13px 20px calc(13px + env(safe-area-inset-bottom, 0px)); }
+  .save-bar-inner { align-items: stretch; flex-direction: column; }
+  .save-bar-inner .save-note { margin-right: 0; }
   body { font-size: 1rem; }
   .hint, .field-label { font-size: 0.9375rem; }
   .mono { font-size: 0.9375rem; }
@@ -806,6 +891,13 @@ details[open].advanced summary::before {
     editingAgentId: null,
     profileDraft: null,
     profileError: "",
+    // Inline custom-skill editor on the profile edit page. null when closed; when
+    // open it is { index: <number|null for a new skill>, name, description,
+    // instructions, error }. Only one editor is open at a time.
+    skillEditor: null,
+    // When the user tries to leave a dirty profile editor, this holds the
+    // pending navigation { action, agent } and the confirm modal is shown.
+    leavePrompt: null,
     slack: null,
     slackDraft: { botToken: "", signingSecret: "" },
     slackError: "",
@@ -979,7 +1071,26 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>";
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml();
+  }
+
+  // The unsaved-changes guard modal. Rendered only while state.leavePrompt is
+  // set (the user tried to leave a dirty profile editor). The backdrop carries
+  // NO data-action, so a click outside the card is inert (Keep editing is the
+  // explicit cancel); the dispatcher's closest("[data-action]") would otherwise
+  // treat a backdrop click as an action.
+  function leavePromptModalHtml() {
+    if (!state.leavePrompt) return "";
+    return '<div class="modal-backdrop">' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Unsaved changes">' +
+      '<h2 class="modal-title">Unsaved changes</h2>' +
+      '<p class="modal-body">This profile has changes you haven&rsquo;t saved. Save them before leaving, or discard them.</p>' +
+      '<div class="modal-foot">' +
+      '<button type="button" class="btn btn-ghost" data-action="leave-cancel">Keep editing</button>' +
+      '<span class="spacer"></span>' +
+      '<button type="button" class="btn btn-danger" data-action="leave-discard">Discard &amp; leave</button>' +
+      '<button type="button" class="btn btn-primary" data-action="leave-save">Save changes</button>' +
+      '</div></div></div>';
   }
 
   function topbarHtml() {
@@ -1576,6 +1687,74 @@ details[open].advanced summary::before {
     return '<div>' + rows + '</div><p class="hint">Only the tools you check are available to this profile. More appear here as this install registers them.</p>';
   }
 
+  // Custom-skill rules mirror the server-side valibot schema so an inline error
+  // is helpful instead of a generic 400 on save.
+  var SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+  function validateSkillEditor(editor, skills) {
+    var name = String(editor.name || "").trim();
+    var description = String(editor.description || "").trim();
+    var instructions = String(editor.instructions || "").trim();
+    if (!name) return "Name is required.";
+    if (name.length > 64) return "Name must be 64 characters or fewer.";
+    if (!SKILL_NAME_RE.test(name)) return "Use lowercase letters, digits, and single hyphens (e.g. release-notes).";
+    if (!description) return "Description is required.";
+    if (description.length > 1024) return "Description must be 1024 characters or fewer.";
+    if (!instructions) return "Instructions are required.";
+    var duplicate = (skills || []).some(function (skill, index) {
+      return index !== editor.index && skill.name === name;
+    });
+    if (duplicate) return "Another skill already uses that name.";
+    return "";
+  }
+
+  function skillEditorFormHtml(editor) {
+    var isNew = editor.index === null || editor.index === undefined;
+    return '<div class="skill-form">' +
+      '<div class="field"><label class="field-label" for="skill-name">Name</label>' +
+      '<input class="input mono" id="skill-name" type="text" value="' + esc(editor.name) + '" placeholder="release-notes" data-action="skill-field-name">' +
+      '<p class="hint">Lowercase letters, digits, and single hyphens. The model always sees this name.</p></div>' +
+      '<div class="field"><label class="field-label" for="skill-desc">Description</label>' +
+      '<input class="input" id="skill-desc" type="text" value="' + esc(editor.description) + '" placeholder="What this skill does, in one line." data-action="skill-field-description">' +
+      '<p class="hint">One line. The model always sees this alongside the name.</p></div>' +
+      '<div class="field"><label class="field-label" for="skill-instr">Instructions</label>' +
+      '<textarea class="textarea mono" id="skill-instr" placeholder="Markdown playbook the model loads only when it uses this skill." data-action="skill-field-instructions">' + esc(editor.instructions) + '</textarea>' +
+      '<p class="hint">Markdown. Loads only when the skill is used, so it can be long.</p></div>' +
+      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
+      '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="skill-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="skill-save-row">' + (isNew ? "Add skill" : "Save skill") + '</button></div></div>';
+  }
+
+  function skillsSectionHtml(draft) {
+    var skills = draft.skills || [];
+    var editor = state.skillEditor;
+    var rows = skills.map(function (skill, index) {
+      // The row's editor opens in place; hide the row that is being edited so the
+      // form takes its slot (a new-skill editor renders below the whole list).
+      if (editor && editor.index === index) return skillEditorFormHtml(editor);
+      return '<div class="skill-row">' +
+        '<div class="sk-body"><span class="sk-name">' + esc(skill.name) + '<span class="badge-src">custom</span></span>' +
+        '<span class="sk-desc">' + esc(skill.description) + '</span></div>' +
+        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="skill-toggle" data-index="' + index + '" ' + (skill.enabled ? "checked" : "") + ' aria-label="Skill enabled"></span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="skill-edit" data-index="' + index + '">Edit</button>' +
+        '<button type="button" class="x-btn" data-action="skill-remove" data-index="' + index + '" aria-label="Remove skill">&times;</button></div>';
+    }).join("");
+    var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
+    // A new-skill editor (index === null) renders below the list, not in a row.
+    var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + skillEditorFormHtml(editor) + '</div>' : "";
+    var addButton = editor
+      ? ""
+      : '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="skill-new">' +
+        '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>New skill</button></div>';
+    var hint = 'Named playbooks this profile can pull in when a task calls for one. The model always sees each skill&rsquo;s name and description; the full instructions load only when a skill is used.';
+    var body = list + newForm + addButton;
+    if (!list && !newForm) {
+      body = '<div class="empty"><p class="field-label">No custom skills yet</p><p class="hint">Add one to give this profile a named playbook it can load on demand.</p></div>' + addButton;
+    }
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Skills</h2><p class="hint">' + hint + '</p></div></div>' + body + '</section>';
+  }
+
   function layerLegendHtml() {
     return '<div class="layer-legend"><p class="field-label">How instructions layer at runtime</p>' +
       '<div class="step"><span class="n">1</span><span><b style="font-weight:500; color:var(--text);">Profile instructions</b> &mdash; this section, shared across every channel.</span></div>' +
@@ -1650,12 +1829,17 @@ details[open].advanced summary::before {
       '</div></section>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Instructions</h2><p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div></div>' +
       '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>' + layerLegendHtml() + '</section>' +
+      skillsSectionHtml(draft) +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Allowed tools</h2></div></div>' + allowedToolsHtml(draft) + '</section>' +
       usedInHtml(draft) +
       dangerZoneHtml(draft) +
-      '<div class="save-bar"><p class="save-note">Changes apply to new threads without a restart.</p>' + profileGenericErrorHtml() +
-      '<button type="button" class="btn btn-ghost" data-action="discard-profile" ' + (!state.profileDirty ? "disabled" : "") + '>Discard</button>' +
-      '<button type="button" class="btn btn-primary" data-action="save-profile" ' + (!state.profileDirty ? "disabled" : "") + '>Save changes</button></div>';
+      '<div class="save-bar-sticky' + (state.profileDirty ? "" : " is-clean") + '">' +
+      '<div class="save-bar-inner">' +
+      '<p class="save-note">&#9679; Unsaved changes &mdash; applies to new threads</p>' + profileGenericErrorHtml() +
+      '<button type="button" class="btn btn-ghost" data-action="discard-profile">Discard</button>' +
+      '<button type="button" class="btn btn-primary" data-action="save-profile">Save changes</button>' +
+      '</div></div>' +
+      '<div aria-hidden="true" style="height:56px"></div>';
   }
 
   function usedInHtml(draft) {
@@ -2411,7 +2595,9 @@ details[open].advanced summary::before {
       enabled: true,
       model: "",
       defaultModels: base ? base.defaultModels : defaultModels(),
-      allowedTools: (base && base.allowedTools && base.allowedTools.length) ? base.allowedTools.slice() : ["lookup_channel_brief"]
+      allowedTools: (base && base.allowedTools && base.allowedTools.length) ? base.allowedTools.slice() : ["lookup_channel_brief"],
+      // New profiles carry no custom skills; the array is what the API persists.
+      skills: []
     };
   }
 
@@ -2426,7 +2612,12 @@ details[open].advanced summary::before {
       defaultModels: agent.defaultModels || defaultModels(),
       // Copy the array: the tools editor mutates draft.allowedTools in place, and
       // it must not reach through into the shared state.agents entry.
-      allowedTools: (agent.allowedTools || []).slice()
+      allowedTools: (agent.allowedTools || []).slice(),
+      // Deep-copy each skill so the inline editor never mutates the shared
+      // state.agents entry — a discard/reopen must show the persisted values.
+      skills: (agent.skills || []).map(function (skill) {
+        return { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: skill.enabled };
+      })
     };
   }
 
@@ -2470,6 +2661,11 @@ details[open].advanced summary::before {
     if (state.profileScreen === "edit") {
       var save = document.querySelector('[data-action="save-profile"]');
       if (save) save.disabled = false;
+      // Reveal the sticky save bar without a full render (which would drop
+      // textarea focus). The classList guard keeps the fake-DOM test harness,
+      // whose querySelector stub has no classList, from throwing.
+      var stickyBar = document.querySelector(".save-bar-sticky");
+      if (stickyBar && stickyBar.classList) { stickyBar.classList.remove("is-clean"); }
     }
   }
 
@@ -2564,6 +2760,25 @@ details[open].advanced summary::before {
     var target = event.target.closest("[data-action]");
     if (!target) return;
     var action = target.getAttribute("data-action");
+
+    // Unsaved-changes guard. The modal's own buttons resolve it; while it is
+    // open, no other click acts; and an attempt to leave a dirty editor opens
+    // it instead of navigating.
+    if (action === "leave-cancel") { state.leavePrompt = null; render(); return; }
+    if (action === "leave-discard") { performProfileLeave(state.leavePrompt); return; }
+    if (action === "leave-save") {
+      var pendingLeave = state.leavePrompt;
+      state.leavePrompt = null;
+      saveProfile(function () { performProfileLeave(pendingLeave); });
+      return;
+    }
+    if (state.leavePrompt) { return; }
+    if (state.profileScreen === "edit" && state.profileDirty && isEditLeaveAction(action)) {
+      state.leavePrompt = { action: action, agent: (target.getAttribute("data-agent") || "") };
+      render();
+      return;
+    }
+
     // Profiles is now a main-panel destination — open lands on the overview,
     // or (with a data-agent) directly on that profile's edit detail (the
     // channel-page Profile row's Edit affordance).
@@ -2585,10 +2800,10 @@ details[open].advanced summary::before {
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
-    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
-    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
@@ -2612,6 +2827,40 @@ details[open].advanced summary::before {
     if (action === "open-channel-from-profile") { state.view = "channels"; state.profileScreen = "list"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "disable-keep") { state.disableConfirm = false; render(); }
     if (action === "disable-confirm") { if (state.profileDraft) state.profileDraft.enabled = false; state.disableConfirm = false; state.profileDirty = true; render(); }
+    // Custom-skills editor: open blank / open seeded / remove / save / cancel.
+    // Each editor open captures the current field text off state.skillEditor so
+    // the inline error survives a re-render (input handlers mirror keystrokes).
+    if (action === "skill-new") { collectProfileDraft(); state.skillEditor = { index: null, name: "", description: "", instructions: "", error: "" }; render(); }
+    if (action === "skill-edit") {
+      collectProfileDraft();
+      var editIndex = Number(target.getAttribute("data-index"));
+      var editSkill = (state.profileDraft.skills || [])[editIndex];
+      if (editSkill) { state.skillEditor = { index: editIndex, name: editSkill.name, description: editSkill.description, instructions: editSkill.instructions, error: "" }; render(); }
+    }
+    if (action === "skill-remove") {
+      collectProfileDraft();
+      var removeIndex = Number(target.getAttribute("data-index"));
+      var removeSkills = state.profileDraft.skills || [];
+      if (removeIndex >= 0 && removeIndex < removeSkills.length) { removeSkills.splice(removeIndex, 1); state.profileDraft.skills = removeSkills; state.skillEditor = null; markProfileDirty(); render(); }
+    }
+    if (action === "skill-cancel") { state.skillEditor = null; render(); }
+    if (action === "skill-save-row") {
+      var editor = state.skillEditor;
+      if (editor) {
+        var skills = state.profileDraft.skills || [];
+        var validationError = validateSkillEditor(editor, skills);
+        if (validationError) { editor.error = validationError; render(); }
+        else {
+          var saved = { name: String(editor.name).trim(), description: String(editor.description).trim(), instructions: String(editor.instructions).trim(), enabled: true };
+          if (editor.index === null || editor.index === undefined) { saved.enabled = true; skills.push(saved); }
+          else { saved.enabled = skills[editor.index] ? skills[editor.index].enabled : true; skills[editor.index] = saved; }
+          state.profileDraft.skills = skills;
+          state.skillEditor = null;
+          markProfileDirty();
+          render();
+        }
+      }
+    }
   });
 
   document.addEventListener("input", function (event) {
@@ -2642,6 +2891,16 @@ details[open].advanced summary::before {
       if (action === "profile-model") { filterModelPicker(target); }
       if (action === "profile-desc") { state.profileDraft.description = target.value; markProfileDirty(); }
       if (action === "profile-instructions") { state.profileDraft.instructions = target.value; markProfileDirty(); }
+      // Skill editor fields mirror into state.skillEditor without a re-render so
+      // the textarea keeps focus; validation/upsert happens on skill-save-row.
+      if (state.skillEditor) {
+        // Typing in a skill editor marks the profile dirty so "Save changes"
+        // enables — a filled editor is committed on save (commitOpenSkillEditor),
+        // so the user never has to notice the separate "Add skill" step.
+        if (action === "skill-field-name") { state.skillEditor.name = target.value; markProfileDirty(); }
+        if (action === "skill-field-description") { state.skillEditor.description = target.value; markProfileDirty(); }
+        if (action === "skill-field-instructions") { state.skillEditor.instructions = target.value; markProfileDirty(); }
+      }
     }
   });
 
@@ -2674,6 +2933,15 @@ details[open].advanced summary::before {
       state.profileDirty = true;
       render();
     }
+    // Custom-skill enable toggle: flip enabled on the row at data-index. Re-render
+    // so the checked attribute in the HTML stays in sync with the draft (the
+    // toggle is a pure-CSS control, so a stale attribute would desync on save).
+    if (action === "skill-toggle" && state.profileDraft) {
+      collectProfileDraft();
+      var toggleIndex = Number(target.getAttribute("data-index"));
+      var toggleSkills = state.profileDraft.skills || [];
+      if (toggleSkills[toggleIndex]) { toggleSkills[toggleIndex].enabled = target.checked; state.profileDraft.skills = toggleSkills; markProfileDirty(); render(); }
+    }
   });
 
   document.addEventListener("submit", function (event) {
@@ -2687,10 +2955,23 @@ details[open].advanced summary::before {
 
   // Escape dismisses the open Model combobox (F6) without picking a model.
   document.addEventListener("keydown", function (event) {
-    if (state.modelPickerOpen && (event.key === "Escape" || event.key === "Esc")) {
-      closeModelPicker();
+    if (event.key === "Escape" || event.key === "Esc") {
+      if (state.leavePrompt) { state.leavePrompt = null; render(); return; }
+      if (state.modelPickerOpen) { closeModelPicker(); }
     }
   });
+
+  // Browser-level guard: warn before a tab close, reload, or external
+  // navigation leaves a profile editor with unsaved changes. window is absent
+  // in the unit-test VM context, so registration is skipped there.
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("beforeunload", function (event) {
+      if (state.profileScreen === "edit" && state.profileDirty) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    });
+  }
 
   // Land on the Profiles overview (topbar / channel-page "Manage profiles"), or
   // directly on a profile's edit detail when a target id is supplied (the
@@ -2830,8 +3111,65 @@ details[open].advanced summary::before {
     }).catch(function (error) { state.saveError = error.message; render(); });
   }
 
-  function saveProfile() {
+  // Commit an open skill editor into the draft before a profile save. Returns
+  // true when it is safe to proceed (no editor, an empty editor discarded, or a
+  // valid editor committed) and false when the editor is invalid — the error is
+  // surfaced and the save aborts so the user never loses their typed skill.
+  function commitOpenSkillEditor() {
+    var editor = state.skillEditor;
+    if (!editor) return true;
+    var name = String(editor.name || "").trim();
+    var description = String(editor.description || "").trim();
+    var instructions = String(editor.instructions || "").trim();
+    if (!name && !description && !instructions) { state.skillEditor = null; return true; }
+    var skills = (state.profileDraft && state.profileDraft.skills) || [];
+    var validationError = validateSkillEditor(editor, skills);
+    if (validationError) { editor.error = validationError; render(); return false; }
+    var saved = { name: name, description: description, instructions: instructions, enabled: true };
+    if (editor.index === null || editor.index === undefined) { skills.push(saved); }
+    else { saved.enabled = skills[editor.index] ? skills[editor.index].enabled : true; skills[editor.index] = saved; }
+    state.profileDraft.skills = skills;
+    state.skillEditor = null;
+    return true;
+  }
+
+  // The four ways to leave the profile editor: the top-nav Profiles/Settings,
+  // the brand-home logo, and the "<- Profiles" back link.
+  function isEditLeaveAction(action) {
+    return action === "open-profiles" || action === "open-settings" ||
+      action === "go-home" || action === "profiles-back";
+  }
+
+  // Perform a confirmed leave — the edit draft is dropped and the pending
+  // navigation is carried out. Used by both "Discard & leave" and the
+  // after-save continuation.
+  function performProfileLeave(pending) {
+    state.leavePrompt = null;
+    state.profileDirty = false;
+    state.skillEditor = null;
+    state.profileError = "";
+    state.profileDraft = null;
+    state.editingAgentId = null;
+    state.disableConfirm = false;
+    var action = pending ? pending.action : "profiles-back";
+    if (action === "open-settings") {
+      openSettings();
+    } else if (action === "go-home") {
+      state.view = "channels";
+      state.profileScreen = "list";
+      render();
+    } else {
+      state.view = "profiles";
+      state.profileScreen = "list";
+      render();
+    }
+  }
+
+  function saveProfile(onSaved) {
     var draft = collectProfileDraft();
+    // Commit an open inline skill editor into the draft first — a filled-but-
+    // not-"Added" skill must be saved, not silently dropped. Abort on invalid.
+    if (!commitOpenSkillEditor()) return;
     state.profileError = "";
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; render(); return; }
@@ -2841,7 +3179,8 @@ details[open].advanced summary::before {
       instructions: draft.instructions,
       enabled: draft.enabled,
       defaultModels: draft.defaultModels || defaultModels(),
-      allowedTools: draft.allowedTools || []
+      allowedTools: draft.allowedTools || [],
+      skills: draft.skills || []
     };
     var isEdit = !!draft.id;
     var request;
@@ -2860,10 +3199,12 @@ details[open].advanced summary::before {
       if (isEdit) {
         // Stay on the editor; re-clone the draft from the refreshed agent so the
         // form reflects exactly what persisted (and the save bar re-disables).
+        // If a leave was requested (Save changes in the guard modal), carry it
+        // out now that the save succeeded, instead of staying on the editor.
         return refreshData().then(function () {
           var saved = agentById(state.editingAgentId);
           if (saved) state.profileDraft = cloneAgent(saved);
-          render();
+          if (onSaved) { onSaved(); } else { render(); }
         });
       }
       // Create → return to the overview so the new profile shows in the list.
@@ -2880,6 +3221,7 @@ details[open].advanced summary::before {
     state.profileError = "";
     state.profileDirty = false;
     state.disableConfirm = false;
+    state.skillEditor = null;
     render();
   }
 

@@ -95,6 +95,33 @@ const defaultModelsSchema = v.object({
   'workers-ai': nonEmptyString,
 });
 
+// A profile skill. `name` must satisfy Flue's `defineSkill` rule so a stored
+// row can never become a turn-killing validation throw at runtime; description
+// and instructions are bounded to keep a skill focused and the prompt sane.
+const skillName = v.pipe(
+  v.string(),
+  v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits, and single hyphens only'),
+  v.maxLength(64),
+);
+const skillSchema = v.object({
+  name: skillName,
+  // Trim before the non-empty check so a whitespace-only value can't pass the
+  // write boundary yet throw at defineSkill (which trims) and be silently
+  // skipped at turn time. The stored value is the normalized one.
+  description: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024)),
+  instructions: v.pipe(v.string(), v.trim(), v.minLength(1)),
+  enabled: v.boolean(),
+});
+// Reject duplicate names at the write boundary — duplicates are a turn-killer
+// downstream, so they must never reach the store.
+const skillsSchema = v.pipe(
+  v.array(skillSchema),
+  v.check(
+    (skills) => new Set(skills.map((skill) => skill.name)).size === skills.length,
+    'skill names must be unique',
+  ),
+);
+
 const agentSchema = v.object({
   id: nonEmptyString,
   name: nonEmptyString,
@@ -104,6 +131,7 @@ const agentSchema = v.object({
   model: v.optional(modelSpecifier),
   defaultModels: defaultModelsSchema,
   allowedTools: v.array(v.string()),
+  skills: v.optional(skillsSchema, []),
 });
 
 const agentPatchSchema = v.partial(
@@ -115,6 +143,7 @@ const agentPatchSchema = v.partial(
     model: v.nullable(modelSpecifier),
     defaultModels: defaultModelsSchema,
     allowedTools: v.array(v.string()),
+    skills: skillsSchema,
   }),
 );
 
@@ -885,6 +914,7 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     ...(input.model !== undefined ? { model: input.model } : {}),
     defaultModels: input.defaultModels,
     allowedTools: input.allowedTools,
+    skills: input.skills,
   };
 }
 
@@ -899,6 +929,7 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.model !== undefined) patch.model = input.model;
   if (input.defaultModels !== undefined) patch.defaultModels = input.defaultModels;
   if (input.allowedTools !== undefined) patch.allowedTools = input.allowedTools;
+  if (input.skills !== undefined) patch.skills = input.skills;
   return patch;
 }
 

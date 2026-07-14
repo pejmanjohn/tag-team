@@ -1,6 +1,7 @@
 import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
@@ -54,10 +55,16 @@ export default defineAgent(async ({ id }) => {
     ? [createLookupChannelBriefTool(config)]
     : [];
 
+  // Skills ride inside the resolved agent — frozen in the snapshot for channel
+  // threads, live-resolved for DMs — so they inherit the same freeze contract
+  // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
+  const skills = resolveProfileSkills(config.agent.skills);
+
   return {
     model: config.model,
     instructions: config.instructions,
     tools,
+    ...(skills.length > 0 ? { skills } : {}),
   };
 });
 

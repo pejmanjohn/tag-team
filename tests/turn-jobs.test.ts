@@ -15,6 +15,7 @@ const AGENT: CustomAgentConfig = {
   enabled: true,
   defaultModels: { claude: 'claude-x', 'workers-ai': 'cf-x' },
   allowedTools: [],
+  skills: [],
 };
 
 function turn(overrides: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {

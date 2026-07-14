@@ -193,6 +193,8 @@ function runAdminPageHarness(
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
+  agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
+  agentPostBodies: Array<Record<string, unknown>>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -205,6 +207,8 @@ function runAdminPageHarness(
   const providerKeyPosts: Array<{ id: string; key: string }> = [];
   const providerKeyDeletes: string[] = [];
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
+  const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
+  const agentPostBodies: Array<Record<string, unknown>> = [];
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
   const slackChannels = options.slackChannels;
@@ -263,10 +267,16 @@ function runAdminPageHarness(
     },
   };
 
+  // Mutable so a PATCH write is reflected by the follow-up GET (saveProfile
+  // re-fetches and re-clones the editor from it), mirroring the real store.
+  const agentsList: Record<string, unknown>[] = (agentsFixture ?? [releaseAgent, opsAgent]).map(
+    (agent) => ({ ...(agent as Record<string, unknown>) }),
+  );
+
   const fetch = (path: string, options?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     if (path === '/admin/api/agents' && method === 'GET') {
-      return Promise.resolve(jsonResponse({ agents: agentsFixture ?? [releaseAgent, opsAgent] }));
+      return Promise.resolve(jsonResponse({ agents: agentsList }));
     }
     if (path === '/admin/api/agents' && method === 'POST') {
       if (agentWriteError) {
@@ -281,7 +291,31 @@ function runAdminPageHarness(
         );
       }
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      agentPostBodies.push(body);
+      agentsList.push({ ...body });
       return Promise.resolve(jsonResponse({ agent: body }, 201));
+    }
+    const agentPatchMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
+    if (agentPatchMatch && method === 'PATCH') {
+      const id = decodeURIComponent(agentPatchMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      agentPatchBodies.push({ id, body });
+      if (agentWriteError) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: agentWriteError.error,
+              ...(agentWriteError.message ? { message: agentWriteError.message } : {}),
+            },
+            agentWriteError.status,
+          ),
+        );
+      }
+      const existing = agentsList.find((agent) => agent.id === id);
+      if (existing) {
+        Object.assign(existing, body, { id });
+      }
+      return Promise.resolve(jsonResponse({ agent: { id, ...body } }));
     }
     if (path === '/admin/api/assignments' && method === 'PUT') {
       const body = JSON.parse(options?.body ?? '{}') as AssignmentFixture;
@@ -472,6 +506,8 @@ function runAdminPageHarness(
     providerKeyPosts,
     providerKeyDeletes,
     favoritesPuts,
+    agentPatchBodies,
+    agentPostBodies,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
@@ -612,6 +648,313 @@ test('New profile opens a blank create screen and validation gates save', async 
   // agents request is issued.
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   assert.match(harness.app.innerHTML, /Name is required\./);
+});
+
+// A checkbox change target that also exposes `checked` (the skill enable toggle
+// and profile-enable toggle both read target.checked).
+function checkboxTarget(attributes: Record<string, string>, checked: boolean): FakeTarget & { checked: boolean } {
+  return {
+    checked,
+    closest() {
+      return null;
+    },
+    getAttribute(name: string) {
+      return attributes[name] ?? null;
+    },
+  };
+}
+
+test('the profile editor manages custom skills end to end and carries them in the save body', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_release',
+        name: 'Release Profile',
+        description: 'Release readiness profile',
+        instructions: 'Answer with release context.',
+        enabled: true,
+        model: 'local-stub/release',
+        defaultModels: { claude: 'anthropic/release', 'workers-ai': '@cf/release' },
+        allowedTools: ['lookup_channel_brief'],
+        skills: [],
+      },
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+
+  // The Skills section renders between Instructions and Allowed tools, empty at first.
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  assert.match(harness.app.innerHTML, /No custom skills yet/);
+
+  // Open a blank editor; the inline form appears with the three fields.
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  assert.match(harness.app.innerHTML, /data-action="skill-field-name"/);
+  assert.match(harness.app.innerHTML, /data-action="skill-field-instructions"/);
+
+  // An invalid name is rejected inline with the client mirror of the server rule.
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'Bad Name!') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'x') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'y') });
+  click({ target: actionTarget({ 'data-action': 'skill-save-row' }) });
+  assert.match(harness.app.innerHTML, /lowercase letters/);
+
+  // Fix it and save; the row lists with the custom badge and defaults enabled.
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'release-notes') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'Turns PRs into a changelog.') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'Write the notes in launch voice.') });
+  click({ target: actionTarget({ 'data-action': 'skill-save-row' }) });
+  assert.match(harness.app.innerHTML, /release-notes/);
+  assert.match(harness.app.innerHTML, /class="badge-src">custom/);
+  assert.match(harness.app.innerHTML, /data-action="skill-toggle" data-index="0" checked/);
+
+  // A duplicate name is rejected.
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'release-notes') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'dupe') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'dupe') });
+  click({ target: actionTarget({ 'data-action': 'skill-save-row' }) });
+  assert.match(harness.app.innerHTML, /Another skill already uses that name/);
+  click({ target: actionTarget({ 'data-action': 'skill-cancel' }) });
+
+  // Toggle the skill off — the toggle re-renders unchecked.
+  change({ target: checkboxTarget({ 'data-action': 'skill-toggle', 'data-index': '0' }, false) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="skill-toggle" data-index="0" checked/);
+
+  // Edit the skill; the form is seeded and the edit preserves the disabled state.
+  click({ target: actionTarget({ 'data-action': 'skill-edit', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /value="release-notes"/);
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'Edited changelog copy.') });
+  click({ target: actionTarget({ 'data-action': 'skill-save-row' }) });
+  assert.match(harness.app.innerHTML, /Edited changelog copy\./);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="skill-toggle" data-index="0" checked/);
+
+  // Save the profile — the PATCH body carries the skills array with the edits.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const patched = harness.agentPatchBodies[0];
+  assert.equal(patched?.id, 'agent_release');
+  assert.deepEqual(patched?.body.skills, [
+    { name: 'release-notes', description: 'Edited changelog copy.', instructions: 'Write the notes in launch voice.', enabled: false },
+  ]);
+
+  // After save the editor re-clones from the (echoed) agent, so the row persists
+  // and the save bar re-disables.
+  assert.match(harness.app.innerHTML, /release-notes/);
+
+  // Remove the skill and save again; the array is now empty in the PATCH body.
+  click({ target: actionTarget({ 'data-action': 'skill-remove', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /No custom skills yet/);
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 2);
+  assert.deepEqual(harness.agentPatchBodies[1]?.body.skills, []);
+});
+
+test('saving a profile with a filled-but-not-added skill editor commits the skill, not drops it', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_trap',
+        name: 'Trap Profile',
+        description: 'Repro for the lost-skill bug',
+        instructions: 'Answer.',
+        enabled: true,
+        model: 'local-stub/trap',
+        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
+        allowedTools: ['lookup_channel_brief'],
+        skills: [],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_trap' }) });
+
+  // Open the editor and fill it — but do NOT click "Add skill" (skill-save-row).
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'incident-scribe') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'Build a timeline.') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, '# Incident Scribe') });
+
+  // Click Save changes directly. The filled editor must be committed, not dropped.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
+    { name: 'incident-scribe', description: 'Build a timeline.', instructions: '# Incident Scribe', enabled: true },
+  ]);
+});
+
+test('saving a profile with an invalid open skill editor blocks the save and shows the error', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_badedit',
+        name: 'Bad Edit Profile',
+        description: 'Repro',
+        instructions: 'Answer.',
+        enabled: true,
+        model: 'local-stub/be',
+        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
+        allowedTools: ['lookup_channel_brief'],
+        skills: [],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_badedit' }) });
+  click({ target: actionTarget({ 'data-action': 'skill-new' }) });
+  input({ target: inputTarget({ 'data-action': 'skill-field-name' }, 'Bad Name!') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-description' }, 'x') });
+  input({ target: inputTarget({ 'data-action': 'skill-field-instructions' }, 'y') });
+
+  // Save must NOT silently proceed — it surfaces the validation error and blocks.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 0);
+  assert.match(harness.app.innerHTML, /lowercase letters/);
+});
+
+test('creating a blank profile round-trips with an empty skills array', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  // The create screen has no Skills section (M3 scope is edit-only), but a new
+  // profile defaults skills to [] and the POST body must still carry the field.
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+  input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Fresh Profile') });
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Answer freshly.') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  // The create POST carries an empty skills array — the backend contract requires
+  // the field, and a blank profile has no custom skills yet.
+  assert.equal(harness.agentPostBodies.length, 1);
+  assert.equal(harness.agentPostBodies[0]?.name, 'Fresh Profile');
+  assert.deepEqual(harness.agentPostBodies[0]?.skills, []);
+});
+
+test('the profile editor save bar is sticky, hidden when clean, and revealed when dirty', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_bar',
+        name: 'Bar Profile',
+        description: 'Save-bar fixture',
+        instructions: 'Answer.',
+        enabled: true,
+        model: 'local-stub/bar',
+        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
+        allowedTools: ['lookup_channel_brief'],
+        skills: [{ name: 'a-skill', description: 'desc', instructions: '# body', enabled: true }],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_bar' }) });
+
+  // The sticky bar exists but is marked clean (hidden) with no pending edits.
+  assert.match(harness.app.innerHTML, /save-bar-sticky/);
+  assert.match(harness.app.innerHTML, /save-bar-sticky[^"]*is-clean/);
+
+  // A render-causing edit (toggle the skill off) marks the profile dirty; the
+  // re-render drops is-clean and shows the "Unsaved changes" label + Save.
+  change({ target: checkboxTarget({ 'data-action': 'skill-toggle', 'data-index': '0' }, false) });
+  assert.doesNotMatch(harness.app.innerHTML, /save-bar-sticky[^"]*is-clean/);
+  assert.match(harness.app.innerHTML, /Unsaved changes/);
+  assert.match(harness.app.innerHTML, /data-action="save-profile"/);
+});
+
+test('leaving a dirty profile editor prompts, and honors keep/discard/save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      {
+        id: 'agent_guard',
+        name: 'Guard Profile',
+        description: 'd',
+        instructions: 'Answer.',
+        enabled: true,
+        model: 'local-stub/guard',
+        defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/y' },
+        allowedTools: ['lookup_channel_brief'],
+        skills: [{ name: 'a-skill', description: 'desc', instructions: '# body', enabled: true }],
+      },
+    ],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const change = harness.listeners.change;
+  assert.ok(click && change);
+
+  const openEditor = () =>
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_guard' }) });
+  // A render-causing edit that marks the profile dirty.
+  const dirtyIt = () =>
+    change({ target: checkboxTarget({ 'data-action': 'skill-toggle', 'data-index': '0' }, false) });
+
+  // Clean editor → clicking Profiles navigates immediately, no modal.
+  openEditor();
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /modal-backdrop/);
+  assert.match(harness.app.innerHTML, /Your profiles/);
+
+  // Dirty editor → clicking Profiles opens the guard modal and does NOT leave.
+  openEditor();
+  dirtyIt();
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  assert.match(harness.app.innerHTML, /modal-backdrop/);
+  assert.match(harness.app.innerHTML, /Unsaved changes/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+
+  // Keep editing → modal closes, still on the editor.
+  click({ target: actionTarget({ 'data-action': 'leave-cancel' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /modal-backdrop/);
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Skills<\/h2>/);
+
+  // Discard & leave → navigate to the list, and NO save was sent.
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'leave-discard' }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /modal-backdrop/);
+  assert.match(harness.app.innerHTML, /Your profiles/);
+  assert.equal(harness.agentPatchBodies.length, 0);
+
+  // Save changes from the modal → PATCH is sent, then it navigates to the list.
+  openEditor();
+  dirtyIt();
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  click({ target: actionTarget({ 'data-action': 'leave-save' }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /modal-backdrop/);
+  assert.match(harness.app.innerHTML, /Your profiles/);
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.agentPatchBodies[0]?.id, 'agent_guard');
 });
 
 test('profile save and access summary render server model-resolution messages', async () => {

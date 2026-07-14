@@ -32,6 +32,7 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
       'workers-ai': '@cf/workers/model',
     },
     allowedTools: [],
+    skills: [],
     ...overrides,
   };
 }
@@ -138,6 +139,21 @@ test('slack-thread initializes from the SQLite config store for the current stat
       'workers-ai': '@cf/runtime/model',
     },
     allowedTools: [],
+    skills: [
+      {
+        name: 'runtime-skill',
+        description: 'A skill materialized end-to-end through the factory.',
+        instructions: '# Runtime Skill\n\nDo the runtime thing.',
+        enabled: true,
+      },
+      // Disabled skill must NOT be materialized.
+      {
+        name: 'disabled-skill',
+        description: 'Should not appear.',
+        instructions: '# Disabled',
+        enabled: false,
+      },
+    ],
   });
   await store.putAssignment({
     workspaceId: 'T_RUNTIME',
@@ -163,6 +179,12 @@ test('slack-thread initializes from the SQLite config store for the current stat
 
     assert.equal(config.model, 'local-stub/runtime-pinned');
     assert.match(String(config.instructions), /Runtime configured instructions\./);
+    // The enabled skill is materialized into AgentRuntimeConfig.skills through
+    // the real factory + snapshot path; the disabled one is excluded.
+    assert.deepEqual(
+      (config.skills ?? []).map((skill) => skill.name),
+      ['runtime-skill'],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

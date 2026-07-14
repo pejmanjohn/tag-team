@@ -21,6 +21,7 @@ function assignmentFixture(overrides: Partial<ResolvedAssignment> = {}): Resolve
       enabled: true,
       defaultModels: { claude: 'anthropic/test-claude', 'workers-ai': '@cf/test/model' },
       allowedTools: ['lookup_channel_brief'],
+      skills: [],
     },
     ...overrides,
   };
@@ -87,6 +88,7 @@ test('channelLabel survives the REAL production path: store -> effective config 
         model: 'local-stub/parity-stub-1',
         defaultModels: { claude: 'anthropic/x', 'workers-ai': '@cf/x' },
         allowedTools: ['lookup_channel_brief'],
+        skills: [],
       },
     ],
     assignments: [
