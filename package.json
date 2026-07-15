@@ -24,7 +24,8 @@
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
-    "slack:bridge": "node scripts/slack-socket-bridge.mjs"
+    "slack:bridge": "node scripts/slack-socket-bridge.mjs",
+    "reset:test-env": "node scripts/reset-test-env.mjs"
   },
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.8",
@@ -44,8 +45,14 @@
   },
   "cloudflare": {
     "label": "Tag Team",
-    "products": ["Workers", "Durable Objects", "Workers AI"],
-    "categories": ["ai"],
+    "products": [
+      "Workers",
+      "Durable Objects",
+      "Workers AI"
+    ],
+    "categories": [
+      "ai"
+    ],
     "bindings": {
       "TAG_ADMIN_TOKEN": {
         "description": "Admin token gating the /admin route. Generate one with: openssl rand -hex 32"
