@@ -57,6 +57,18 @@ function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   };
 }
 
+test('the worker root redirects to /admin instead of a bare 404', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const response = await app.request('/', { redirect: 'manual' });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get('location'), '/admin');
+  } finally {
+    store.close();
+  }
+});
+
 test('admin API returns 404 for every admin route when TAG_ADMIN_TOKEN is unset', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

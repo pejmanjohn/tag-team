@@ -296,8 +296,10 @@ button, input, textarea, select { font: inherit; }
   min-height: 44px;
   padding: 9px 12px;
 }
-.bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; font-size: 0.8125rem; font-weight: 500; gap: 6px; overflow-wrap: anywhere; }
-.bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; overflow-wrap: anywhere; }
+/* The name never breaks mid-word ("Defaul/t") or shrinks — the flexible meta
+   text absorbs the squeeze instead. Very long names ellipsize. */
+.bundle-row .b-name { align-items: center; color: var(--text); display: inline-flex; flex-shrink: 0; font-size: 0.8125rem; font-weight: 500; gap: 6px; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bundle-row .b-meta { color: var(--text-3); font-family: var(--mono); font-size: 0.71875rem; min-width: 0; overflow-wrap: anywhere; }
 .bundle-row .spacer { flex: 1; }
 .x-btn {
   background: none;
@@ -713,6 +715,7 @@ details[open].advanced summary::before {
   .btn { font-size: 0.875rem; padding: 9px 14px; }
   .btn-sm { font-size: 0.8125rem; padding: 6px 11px; }
   .main-head, .section-head, .bundle-row, .save-bar { align-items: stretch; flex-direction: column; }
+  .bundle-row .b-name { max-width: 100%; }
   .save-note { margin-right: 0; }
   .save-bar-sticky { padding: 13px 20px calc(13px + env(safe-area-inset-bottom, 0px)); }
   .save-bar-inner { align-items: stretch; flex-direction: column; }
@@ -1504,7 +1507,7 @@ details[open].advanced summary::before {
       slackStepBoldHint("Signing Secret") + ' &mdash; Slack lands on ' + slackStepBoldHint("Basic Information") + ' after creating the app. Under <span class="chip">App Credentials</span> &rarr; ' + slackStepBoldHint("Signing Secret") + ' &rarr; Show &rarr; copy.</span></div>' +
       '<input class="input mono" name="signingSecret" type="password" autocomplete="off" aria-label="Signing secret" placeholder="Paste the Signing Secret here" value="' + esc(state.slackDraft.signingSecret) + '" data-action="slack-signing-secret"></div>' +
       '<div class="paste-pair"><div class="pair-head"><span class="n">b</span><span>' +
-      slackStepBoldHint("Bot User OAuth Token") + ' &mdash; in the left sidebar, click the <span class="chip">OAuth &amp; Permissions</span> tab &rarr; ' + slackStepBoldHint("Install to Workspace") + ' &rarr; Allow. The token (<span class="chip">xoxb-&hellip;</span>) appears only after you click Install. Copy it.</span></div>' +
+      slackStepBoldHint("Bot User OAuth Token") + ' &mdash; in the left sidebar, click the <span class="chip">OAuth &amp; Permissions</span> tab. Under the <span class="chip">OAuth Tokens</span> heading, click the green ' + slackStepBoldHint("Install to (your workspace)") + ' button &rarr; Allow. The token (<span class="chip">xoxb-&hellip;</span>) appears there after installing. Copy it.</span></div>' +
       '<input class="input mono" name="botToken" type="password" autocomplete="off" aria-label="Bot token" placeholder="Paste the xoxb-&hellip; token here" value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
       '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Not the App-Level Token (<span class="chip">xapp-&hellip;</span>, that&rsquo;s Socket Mode) and not the deprecated Verification Token. Only <span class="chip">xoxb-&hellip;</span> and the Signing Secret.</span></div>' +
       '<div class="full" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + validateBtn + validateTail + '</div>' +

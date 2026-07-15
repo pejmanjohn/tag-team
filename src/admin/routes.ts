@@ -232,6 +232,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return next();
   };
 
+  // The worker's root is not a product surface — send visitors to the admin
+  // (the gate/login there handles auth). Bare 404 at `/` read as a broken
+  // install during live testing.
+  app.get('/', (c) => c.redirect('/admin', 302));
+
   app.use('/admin', adminGate);
   app.use('/admin/*', adminGate);
   app.use('/admin/api/*', async (c, next) => {
