@@ -538,6 +538,57 @@ details[open].advanced summary::before {
   .skill-row { align-items: stretch; flex-direction: column; }
 }
 
+/* ---- profile connections (remote MCP servers) ---- */
+.conn-host { color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+.conn-meta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.conn-pill {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 0.71875rem;
+  font-weight: 500;
+  gap: 5px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.conn-pill-on { background: var(--ok-tint); color: var(--ok); }
+.conn-pill-off { background: rgba(28, 25, 23, 0.06); color: var(--text-3); }
+.conn-pill-warn { background: var(--danger-tint); color: #a92c30; }
+.seg { box-shadow: inset 0 0 0 1px var(--line-strong); border-radius: 8px; display: inline-flex; overflow: hidden; }
+.seg button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 7px 13px;
+}
+.seg button + button { box-shadow: inset 1px 0 0 var(--line-strong); }
+.seg button.on { background: var(--ember); color: #22130a; font-weight: 500; }
+.seg button:disabled { color: var(--text-3); cursor: not-allowed; opacity: 0.55; }
+.conn-tools { display: flex; flex-direction: column; gap: 6px; }
+.conn-tool {
+  align-items: flex-start;
+  border-radius: var(--radius);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  cursor: pointer;
+  display: flex;
+  gap: 11px;
+  padding: 9px 12px;
+}
+.conn-tool .tool-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-tool .tool-name { color: var(--text); font-family: var(--mono); font-size: 0.78125rem; font-weight: 600; overflow-wrap: anywhere; }
+.conn-tool .tool-desc { color: var(--text-3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.conn-header-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.conn-header-row .input { flex: 1; min-width: 140px; }
+.conn-security { color: var(--text-3); font-size: 0.78125rem; text-wrap: pretty; }
+@media (max-width: 720px) {
+  .skill-row.conn-row { align-items: stretch; flex-direction: column; }
+}
+
 /* ---- import skills from a URL (panel + picker) ---- */
 .import-panel { gap: 12px; }
 .import-summary {
@@ -956,6 +1007,19 @@ details[open].advanced summary::before {
     // resolution is the /admin/api/skills/resolve payload (null until "Find
     // skills" returns) and selected is a boolean[] parallel to resolution.skills.
     skillImport: null,
+    // Inline Connections (remote MCP server) editor on the profile edit page.
+    // null when closed; when open it is a working copy of one connection plus
+    // TRANSIENT secrets (bearerToken + headerValues) that live ONLY here and are
+    // PUT to the settings store on save, then cleared — they never enter the
+    // profile PATCH body. { index: <number|null for new>, id, displayName, url,
+    // transport, authMode, headerNames, headerValues, bearerToken, trusted,
+    // enabled, testing, testError, discoveredTools, checked (bool[] parallel to
+    // discoveredTools), lifecycleStatus, statusText, lastCheckedAt, sources
+    // (secret presence from a prior save: {bearer, headers}), error }.
+    connectionEditor: null,
+    // Index of the connection pending removal (its confirm modal is open), or
+    // null. The DELETE of its secrets is issued on the next profile save.
+    connectionRemove: null,
     // When the user tries to leave a dirty profile editor, this holds the
     // pending navigation { action, agent } and the confirm modal is shown.
     leavePrompt: null,
@@ -1132,7 +1196,7 @@ details[open].advanced summary::before {
 
   function render() {
     var app = document.getElementById("app");
-    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml();
+    app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + leavePromptModalHtml() + connectionRemoveModalHtml();
   }
 
   // The unsaved-changes guard modal. Rendered only while state.leavePrompt is
@@ -1893,6 +1957,192 @@ details[open].advanced summary::before {
     return '<section class="section"><div class="section-head"><div><h2 class="section-title">Skills</h2><p class="hint">' + hint + '</p></div></div>' + body + '</section>';
   }
 
+  /* ---- Connections (remote MCP servers) ---------------------------------- */
+
+  // slugify a displayName into a connection id (lowercase, non-alnum -> '-',
+  // trimmed, max 64). Used only for NEW connections; the id is immutable on edit
+  // and becomes the mcp__<id>__ tool prefix and the secret key.
+  function connectionSlug(name) {
+    var slug = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug.slice(0, 64);
+  }
+
+  // Parse the URL host for the card meta line — client-side new URL() is fine
+  // here (this is browser JS), and a malformed URL just falls back to the raw
+  // string so a half-typed connection still renders.
+  function connectionHost(url) {
+    try { return new URL(url).host; } catch (_) { return String(url || ""); }
+  }
+
+  function connectionStatusPill(conn) {
+    if (conn.lifecycleStatus === "ready") {
+      var n = (conn.allowedTools || []).length;
+      return '<span class="conn-pill conn-pill-on"><span class="badge"><span class="dot"></span></span>Connected &middot; ' + n + ' tool' + (n === 1 ? "" : "s") + '</span>';
+    }
+    if (conn.lifecycleStatus === "failed") {
+      return '<span class="conn-pill conn-pill-warn">' + esc(conn.statusText || "Connection failed") + '</span>';
+    }
+    return '<span class="conn-pill conn-pill-off">Not tested</span>';
+  }
+
+  // The segmented transport control. STDIO is present but greyed (disabled) with
+  // the "Not supported on Cloudflare Workers" title, per the locked decision.
+  function transportSegmentHtml(active) {
+    function seg(value, label, disabled) {
+      var on = active === value && !disabled;
+      return '<button type="button" class="' + (on ? "on" : "") + '"' +
+        (disabled ? ' disabled title="Not supported on Cloudflare Workers"' : ' data-action="conn-transport" data-transport="' + value + '"') +
+        '>' + label + '</button>';
+    }
+    return '<div class="seg" role="group" aria-label="Transport">' +
+      seg("streamable-http", "Streamable HTTP", false) +
+      seg("sse", "SSE", false) +
+      seg("stdio", "STDIO", true) + "</div>";
+  }
+
+  // The discovered-tools checkbox list rendered after a successful Test. Every
+  // tool defaults checked; editor.checked is the parallel bool[] the operator
+  // toggles. The count line mirrors the card pill.
+  function connectionToolsHtml(editor) {
+    var tools = editor.discoveredTools || [];
+    if (!tools.length) return "";
+    var checked = editor.checked || [];
+    var rows = tools.map(function (tool, index) {
+      var on = checked[index] !== false;
+      var meta = tool.description ? '<span class="tool-desc">' + esc(tool.description) + '</span>' : "";
+      return '<label class="conn-tool">' +
+        '<span class="import-check' + (on ? " on" : "") + '"><input type="checkbox" data-action="conn-tool-toggle" data-index="' + index + '" ' + (on ? "checked" : "") + ' aria-label="Allow ' + esc(tool.name) + '"></span>' +
+        '<span class="tool-body"><span class="tool-name">' + esc(tool.name) + '</span>' + meta + '</span></label>';
+    }).join("");
+    var count = tools.length;
+    return '<div class="field"><label class="field-label">Discovered tools &mdash; Connected &middot; ' + count + ' tool' + (count === 1 ? "" : "s") + '</label>' +
+      '<p class="hint">All checked by default. Uncheck write-capable tools you don&rsquo;t need.</p>' +
+      '<div class="conn-tools">' + rows + '</div></div>';
+  }
+
+  // The header repeater rows (name + value). The value input is password-type; a
+  // stored value shows the "•••• stored" placeholder (the value itself is never
+  // echoed back from the server, so the box is empty until re-typed).
+  function connectionHeadersHtml(editor) {
+    var names = editor.headerNames || [];
+    var values = editor.headerValues || [];
+    var sources = (editor.sources && editor.sources.headers) || {};
+    var rows = names.map(function (name, index) {
+      var storedHere = sources[name] && sources[name] !== "missing";
+      var placeholder = storedHere ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Header value \\u2014 stored securely, never shown again";
+      return '<div class="conn-header-row">' +
+        '<input class="input mono" type="text" value="' + esc(name) + '" placeholder="X-Api-Key" aria-label="Header name" data-action="conn-header-name" data-index="' + index + '">' +
+        '<input class="input mono" type="password" autocomplete="off" value="' + esc(values[index] || "") + '" placeholder="' + placeholder + '" aria-label="Header value" data-action="conn-header-value" data-index="' + index + '">' +
+        '<button type="button" class="x-btn" data-action="conn-header-remove" data-index="' + index + '" aria-label="Remove header">&times;</button></div>';
+    }).join("");
+    return '<div class="field"><label class="field-label">Custom headers</label>' + rows +
+      '<div><button type="button" class="btn btn-ghost btn-sm" data-action="conn-header-add">Add header</button></div></div>';
+  }
+
+  function connectionEditorFormHtml(editor) {
+    var isNew = editor.index === null || editor.index === undefined;
+    var testDisabled = !editor.trusted || !String(editor.url || "").trim();
+    var bearerStored = editor.sources && editor.sources.bearer && editor.sources.bearer !== "missing";
+    var bearerPlaceholder = bearerStored ? "\\u2022\\u2022\\u2022\\u2022 stored" : "Paste token \\u2014 stored securely, never shown again";
+    var authHtml = '<div class="field"><label class="field-label" for="conn-auth">Authentication</label>' +
+      '<div class="select-wrap"><select class="input" id="conn-auth" data-action="conn-auth">' +
+      '<option value="none"' + (editor.authMode === "none" ? " selected" : "") + '>None</option>' +
+      '<option value="bearer"' + (editor.authMode === "bearer" ? " selected" : "") + '>Bearer token</option>' +
+      '</select></div>';
+    if (editor.authMode === "bearer") {
+      authHtml += '<input class="input mono" type="password" autocomplete="off" style="margin-top:8px;" value="' + esc(editor.bearerToken || "") + '" placeholder="' + bearerPlaceholder + '" aria-label="Bearer token" data-action="conn-field-bearer">';
+    }
+    authHtml += "</div>";
+    var toolsHtml = connectionToolsHtml(editor);
+    var testError = editor.testError ? '<p class="field-error">' + esc(editor.testError) + '</p>' : "";
+    var testLabel = editor.testing ? "Testing&hellip;" : (editor.lifecycleStatus === "ready" ? "Re-test connection" : "Test connection");
+    return '<div class="skill-form">' +
+      '<div class="field"><label class="field-label" for="conn-name">Name</label>' +
+      '<input class="input" id="conn-name" type="text" value="' + esc(editor.displayName) + '" placeholder="Linear" data-action="conn-field-name"></div>' +
+      '<div class="field"><label class="field-label" for="conn-url">Server URL</label>' +
+      '<input class="input mono" id="conn-url" type="text" value="' + esc(editor.url) + '" placeholder="https://mcp.example.com/mcp" data-action="conn-field-url">' +
+      '<p class="hint">https only. The tool prefix is ' + esc(editor.id || connectionSlug(editor.displayName) || "id") + '.</p></div>' +
+      '<div class="field"><label class="field-label">Transport</label>' + transportSegmentHtml(editor.transport) + '</div>' +
+      authHtml +
+      connectionHeadersHtml(editor) +
+      '<label class="conn-tool" style="cursor:pointer;"><span class="import-check' + (editor.trusted ? " on" : "") + '"><input type="checkbox" data-action="conn-trust" ' + (editor.trusted ? "checked" : "") + ' aria-label="I trust this server"></span>' +
+      '<span class="tool-body"><span class="tool-name" style="font-family:inherit; font-weight:500;">I trust this server. It can see conversation content sent to its tools.</span></span></label>' +
+      '<div><button type="button" class="btn btn-soft btn-sm" data-action="conn-test"' + (testDisabled ? " disabled" : "") + '>' + testLabel + '</button>' + testError + '</div>' +
+      toolsHtml +
+      (editor.error ? '<p class="field-error">' + esc(editor.error) + '</p>' : "") +
+      '<div class="skill-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="conn-save-row">' + (isNew ? "Add connection" : "Save connection") + '</button></div></div>';
+  }
+
+  // Client-side validation mirroring the server valibot schema so an inline error
+  // shows before the save round-trips.
+  function validateConnectionEditor(editor, servers) {
+    var name = String(editor.displayName || "").trim();
+    if (!name) return "Name is required.";
+    if (name.length > 80) return "Name must be 80 characters or fewer.";
+    var url = String(editor.url || "").trim();
+    if (!url) return "Server URL is required.";
+    // NOTE: a regex with slashes cannot appear in this template literal (the
+    // escaped slashes collapse into a // comment at render time), so match the
+    // https scheme with a plain prefix check instead.
+    if (url.slice(0, 8).toLowerCase() !== "https://") return "MCP server URLs must use https.";
+    var id = editor.id || connectionSlug(name);
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) return "Name must contain at least one letter or digit.";
+    var duplicate = (servers || []).some(function (server, index) {
+      return index !== editor.index && server.id === id;
+    });
+    if (duplicate) return "Another connection already uses that name.";
+    return "";
+  }
+
+  function connectionsSectionHtml(draft) {
+    var servers = draft.mcpServers || [];
+    var editor = state.connectionEditor;
+    var rows = servers.map(function (conn, index) {
+      if (editor && editor.index === index) return connectionEditorFormHtml(editor);
+      var transportLabel = conn.transport === "sse" ? "SSE" : "Streamable HTTP";
+      return '<div class="skill-row conn-row">' +
+        '<div class="sk-body"><span class="sk-name" style="font-family:inherit;">' + esc(conn.displayName) + '</span>' +
+        '<span class="conn-host">' + esc(connectionHost(conn.url)) + '</span>' +
+        '<span class="conn-meta"><span class="badge-src">' + transportLabel + '</span>' + connectionStatusPill(conn) + '</span></div>' +
+        '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="conn-toggle" data-index="' + index + '" ' + (conn.enabled ? "checked" : "") + ' aria-label="Connection enabled"></span>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="conn-edit" data-index="' + index + '">Edit</button>' +
+        '<button type="button" class="x-btn" data-action="conn-remove" data-index="' + index + '" aria-label="Remove connection">&times;</button></div>';
+    }).join("");
+    var list = rows ? '<div class="skill-list">' + rows + '</div>' : "";
+    var newForm = (editor && (editor.index === null || editor.index === undefined)) ? '<div class="skill-list">' + connectionEditorFormHtml(editor) + '</div>' : "";
+    var addButton = editor ? "" :
+      '<div class="skill-actions"><button type="button" class="btn btn-soft btn-sm i-lead" data-action="conn-new">' +
+      '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>Add connection</button></div>';
+    var hint = 'Remote MCP servers this profile can call. Only connect to servers you trust.';
+    // The security-boundary copy is exact per the spec — do not paraphrase.
+    var security = '<p class="conn-security">Only connect to servers you trust. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent. Uncheck write-capable tools you don&rsquo;t need. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
+    var body = list + newForm + addButton;
+    if (!list && !newForm) {
+      body = '<div class="empty"><p class="field-label">No connections yet</p><p class="hint">Add a remote MCP server by URL to give this profile extra tools.</p></div>' + addButton;
+    }
+    return '<section class="section"><div class="section-head"><div><h2 class="section-title">Connections</h2><p class="hint">' + hint + '</p></div></div>' + body + security + '</section>';
+  }
+
+  // The Remove-connection confirm modal. Rendered only while state.connectionRemove
+  // is a valid index. Reuses the shared modal chrome.
+  function connectionRemoveModalHtml() {
+    if (state.connectionRemove === null || state.connectionRemove === undefined) return "";
+    var draft = state.profileDraft;
+    var servers = (draft && draft.mcpServers) || [];
+    var conn = servers[state.connectionRemove];
+    if (!conn) return "";
+    return '<div class="modal-backdrop">' +
+      '<div class="modal-card" role="dialog" aria-modal="true" aria-label="Remove connection">' +
+      '<h2 class="modal-title">Remove ' + esc(conn.displayName) + '?</h2>' +
+      '<p class="modal-body">This drops the connection and its tool approvals from this profile. Its stored token and header values are deleted when you save.</p>' +
+      '<div class="modal-foot"><span class="spacer"></span>' +
+      '<button type="button" class="btn btn-ghost" data-action="conn-remove-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-danger" data-action="conn-remove-confirm">Remove connection</button>' +
+      '</div></div></div>';
+  }
+
   function layerLegendHtml() {
     return '<div class="layer-legend"><p class="field-label">How instructions layer at runtime</p>' +
       '<div class="step"><span class="n">1</span><span><b style="font-weight:500; color:var(--text);">Profile instructions</b> &mdash; this section, shared across every channel.</span></div>' +
@@ -1968,6 +2218,7 @@ details[open].advanced summary::before {
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Instructions</h2><p class="hint">These travel with the profile to every channel it&rsquo;s attached to.</p></div></div>' +
       '<div class="field">' + profileInstructionsFieldHtml(draft, false) + '</div>' + layerLegendHtml() + '</section>' +
       skillsSectionHtml(draft) +
+      connectionsSectionHtml(draft) +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Allowed tools</h2></div></div>' + allowedToolsHtml(draft) + '</section>' +
       usedInHtml(draft) +
       dangerZoneHtml(draft) +
@@ -2735,7 +2986,9 @@ details[open].advanced summary::before {
       defaultModels: base ? base.defaultModels : defaultModels(),
       allowedTools: (base && base.allowedTools && base.allowedTools.length) ? base.allowedTools.slice() : ["lookup_channel_brief"],
       // New profiles carry no custom skills; the array is what the API persists.
-      skills: []
+      skills: [],
+      // New profiles carry no Connections either; the array is what the API persists.
+      mcpServers: []
     };
   }
 
@@ -2755,8 +3008,38 @@ details[open].advanced summary::before {
       // state.agents entry — a discard/reopen must show the persisted values.
       skills: (agent.skills || []).map(function (skill) {
         return { name: skill.name, description: skill.description, instructions: skill.instructions, enabled: skill.enabled };
-      })
+      }),
+      // Deep-copy each connection (policy only — never a secret) so the inline
+      // editor never mutates the shared state.agents entry.
+      mcpServers: (agent.mcpServers || []).map(cloneConnection)
     };
+  }
+
+  // Deep-copy one connection's POLICY fields (secrets never live in the agent
+  // list). discoveredTools/allowedTools/headerNames are fresh arrays so an editor
+  // never reaches through to the shared state.agents entry.
+  function cloneConnection(conn) {
+    var copy = {
+      id: conn.id,
+      displayName: conn.displayName,
+      url: conn.url,
+      transport: conn.transport || "streamable-http",
+      authMode: conn.authMode || "none",
+      headerNames: (conn.headerNames || []).slice(),
+      trusted: !!conn.trusted,
+      enabled: !!conn.enabled,
+      lifecycleStatus: conn.lifecycleStatus || "pending",
+      statusText: conn.statusText || "",
+      discoveredTools: (conn.discoveredTools || []).map(function (tool) {
+        var t = { name: tool.name };
+        if (tool.title !== undefined) t.title = tool.title;
+        if (tool.description !== undefined) t.description = tool.description;
+        return t;
+      }),
+      allowedTools: (conn.allowedTools || []).slice()
+    };
+    if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
+    return copy;
   }
 
   function modelWarning(model) {
@@ -2938,10 +3221,10 @@ details[open].advanced summary::before {
     if (action === "discard-channel") { var a = activeAssignment(); if (a) selectActive(a.workspaceId, a.channelId); render(); }
     if (action === "save-channel") { saveChannel(); }
     // Profiles master-detail navigation + form actions.
-    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
-    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
-    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "new-profile") { state.view = "profiles"; state.profileScreen = "create"; state.profileDraft = newProfileDraft(); state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "edit-profile") { var selected = agentById(target.getAttribute("data-agent")); if (selected) { state.view = "profiles"; state.profileScreen = "edit"; state.editingAgentId = selected.id; state.profileDraft = cloneAgent(selected); state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); } }
+    if (action === "profiles-back") { state.profileScreen = "list"; state.profileDraft = null; state.editingAgentId = null; state.profileError = ""; state.profileDirty = false; state.disableConfirm = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
+    if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
     // Settings (model-providers) is a separate destination that lands with its
     // own build; the affordance is present per the approved model-field design.
     if (action === "open-settings") { openSettings(); }
@@ -3012,6 +3295,68 @@ details[open].advanced summary::before {
       render();
     }
     if (action === "import-add") { addSelectedSkills(); }
+
+    // Connections (remote MCP servers) editor: open blank / open seeded / remove
+    // (confirm) / test / save / cancel. Each open captures the current draft off
+    // the form first so unrelated typed text is not lost.
+    if (action === "conn-new") {
+      collectProfileDraft();
+      state.skillEditor = null; state.skillImport = null;
+      state.connectionEditor = newConnectionEditor();
+      render();
+    }
+    if (action === "conn-edit") {
+      collectProfileDraft();
+      var connEditIndex = Number(target.getAttribute("data-index"));
+      var connEditServer = (state.profileDraft.mcpServers || [])[connEditIndex];
+      if (connEditServer) { state.connectionEditor = editorFromConnection(connEditIndex, connEditServer); render(); }
+    }
+    if (action === "conn-cancel") { state.connectionEditor = null; render(); }
+    if (action === "conn-remove") {
+      collectProfileDraft();
+      state.connectionRemove = Number(target.getAttribute("data-index"));
+      render();
+    }
+    if (action === "conn-remove-cancel") { state.connectionRemove = null; render(); }
+    if (action === "conn-remove-confirm") {
+      var removeConnIndex = state.connectionRemove;
+      var removeServers = (state.profileDraft && state.profileDraft.mcpServers) || [];
+      if (removeConnIndex !== null && removeConnIndex >= 0 && removeConnIndex < removeServers.length) {
+        // Record the id so its secrets are DELETEd on the next save, even though
+        // the row is gone from the array now.
+        rememberRemovedConnection(removeServers[removeConnIndex]);
+        removeServers.splice(removeConnIndex, 1);
+        state.profileDraft.mcpServers = removeServers;
+        // If the open editor pointed at a shifted index, just close it — simplest
+        // correct behavior.
+        state.connectionEditor = null;
+        markProfileDirty();
+      }
+      state.connectionRemove = null;
+      render();
+    }
+    if (action === "conn-transport" && state.connectionEditor) {
+      state.connectionEditor.transport = target.getAttribute("data-transport") || "streamable-http";
+      markProfileDirty();
+      render();
+    }
+    if (action === "conn-header-add" && state.connectionEditor) {
+      var addEditor = state.connectionEditor;
+      addEditor.headerNames = (addEditor.headerNames || []).concat("");
+      addEditor.headerValues = (addEditor.headerValues || []).concat("");
+      markProfileDirty();
+      render();
+    }
+    if (action === "conn-header-remove" && state.connectionEditor) {
+      var hdrEditor = state.connectionEditor;
+      var hdrIndex = Number(target.getAttribute("data-index"));
+      (hdrEditor.headerNames || []).splice(hdrIndex, 1);
+      (hdrEditor.headerValues || []).splice(hdrIndex, 1);
+      markProfileDirty();
+      render();
+    }
+    if (action === "conn-test") { testConnection(); }
+    if (action === "conn-save-row") { commitConnectionRow(); }
   });
 
   document.addEventListener("input", function (event) {
@@ -3054,6 +3399,18 @@ details[open].advanced summary::before {
         if (action === "skill-field-name") { state.skillEditor.name = target.value; markProfileDirty(); }
         if (action === "skill-field-description") { state.skillEditor.description = target.value; markProfileDirty(); }
         if (action === "skill-field-instructions") { state.skillEditor.instructions = target.value; markProfileDirty(); }
+      }
+      // Connection editor fields mirror into state.connectionEditor without a
+      // re-render so the inputs keep focus. The bearer/header VALUES are the
+      // transient secrets — they stay in editor state only and are PUT to the
+      // settings store on save, never entering the profile PATCH body.
+      if (state.connectionEditor) {
+        var connEditor = state.connectionEditor;
+        if (action === "conn-field-name") { connEditor.displayName = target.value; markProfileDirty(); }
+        if (action === "conn-field-url") { connEditor.url = target.value; markProfileDirty(); }
+        if (action === "conn-field-bearer") { connEditor.bearerToken = target.value; markProfileDirty(); }
+        if (action === "conn-header-name") { connEditor.headerNames[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
+        if (action === "conn-header-value") { connEditor.headerValues[Number(target.getAttribute("data-index"))] = target.value; markProfileDirty(); }
       }
     }
   });
@@ -3105,6 +3462,37 @@ details[open].advanced summary::before {
       state.skillImport.selected = importSelected;
       render();
     }
+    // Connection card enable toggle: flip enabled on the row at data-index.
+    if (action === "conn-toggle" && state.profileDraft) {
+      collectProfileDraft();
+      var connToggleIndex = Number(target.getAttribute("data-index"));
+      var connToggleServers = state.profileDraft.mcpServers || [];
+      if (connToggleServers[connToggleIndex]) { connToggleServers[connToggleIndex].enabled = target.checked; state.profileDraft.mcpServers = connToggleServers; markProfileDirty(); render(); }
+    }
+    // Connection auth mode select (None / Bearer). Re-render to show/hide the
+    // bearer paste field.
+    if (action === "conn-auth" && state.connectionEditor) {
+      state.connectionEditor.authMode = target.value === "bearer" ? "bearer" : "none";
+      markProfileDirty();
+      render();
+    }
+    // Trust checkbox gates Test + enable. Re-render so the Test button's disabled
+    // state and the checkbox's visual sync with the flag.
+    if (action === "conn-trust" && state.connectionEditor) {
+      state.connectionEditor.trusted = !!target.checked;
+      markProfileDirty();
+      render();
+    }
+    // Discovered-tool checkbox: flip the parallel checked[] flag. Re-render so the
+    // check visual and the count line stay in sync.
+    if (action === "conn-tool-toggle" && state.connectionEditor) {
+      var connToolIndex = Number(target.getAttribute("data-index"));
+      var connChecked = state.connectionEditor.checked || [];
+      connChecked[connToolIndex] = target.checked;
+      state.connectionEditor.checked = connChecked;
+      markProfileDirty();
+      render();
+    }
   });
 
   document.addEventListener("submit", function (event) {
@@ -3144,6 +3532,8 @@ details[open].advanced summary::before {
     state.profileError = "";
     state.profileDirty = false;
     state.disableConfirm = false;
+    state.connectionEditor = null;
+    state.connectionRemove = null;
     var target = targetAgentId ? agentById(targetAgentId) : null;
     if (target) {
       state.profileScreen = "edit";
@@ -3296,6 +3686,278 @@ details[open].advanced summary::before {
     return true;
   }
 
+  /* ---- Connections editor logic ------------------------------------------ */
+
+  // A blank Connections editor for the "Add connection" flow.
+  function newConnectionEditor() {
+    return {
+      index: null,
+      id: "",
+      displayName: "",
+      url: "",
+      transport: "streamable-http",
+      authMode: "none",
+      headerNames: [],
+      headerValues: [],
+      bearerToken: "",
+      trusted: false,
+      enabled: true,
+      testing: false,
+      testError: "",
+      discoveredTools: [],
+      checked: [],
+      lifecycleStatus: "pending",
+      statusText: "",
+      lastCheckedAt: null,
+      // Secret presence is inferred from the persisted policy (secrets-by-
+      // reference): a saved bearer connection means a token was stored, a saved
+      // headerName means that header value was stored. A freshly typed value
+      // overrides the placeholder. Blank for a new connection.
+      sources: { bearer: "missing", headers: {} },
+      error: ""
+    };
+  }
+
+  // Seed an editor from an existing connection (POLICY only — secrets never live
+  // in the profile row). checked[] is derived from allowedTools ∩ discoveredTools;
+  // sources carry the "stored" placeholders for the bearer + known header names.
+  function editorFromConnection(index, conn) {
+    var editor = newConnectionEditor();
+    editor.index = index;
+    editor.id = conn.id;
+    editor.displayName = conn.displayName;
+    editor.url = conn.url;
+    editor.transport = conn.transport || "streamable-http";
+    editor.authMode = conn.authMode || "none";
+    editor.headerNames = (conn.headerNames || []).slice();
+    editor.headerValues = editor.headerNames.map(function () { return ""; });
+    editor.trusted = !!conn.trusted;
+    editor.enabled = !!conn.enabled;
+    editor.lifecycleStatus = conn.lifecycleStatus || "pending";
+    editor.statusText = conn.statusText || "";
+    editor.lastCheckedAt = conn.lastCheckedAt !== undefined ? conn.lastCheckedAt : null;
+    editor.discoveredTools = (conn.discoveredTools || []).map(function (tool) {
+      var t = { name: tool.name };
+      if (tool.title !== undefined) t.title = tool.title;
+      if (tool.description !== undefined) t.description = tool.description;
+      return t;
+    });
+    var approved = conn.allowedTools || [];
+    editor.checked = editor.discoveredTools.map(function (tool) { return approved.indexOf(tool.name) >= 0; });
+    var headerSources = {};
+    editor.headerNames.forEach(function (name) { headerSources[name] = "stored"; });
+    editor.sources = { bearer: conn.authMode === "bearer" ? "stored" : "missing", headers: headerSources };
+    return editor;
+  }
+
+  // Track a removed connection so its secrets are DELETEd on the next save. Keyed
+  // by id; headerNames are needed because the settings store has no prefix scan.
+  function rememberRemovedConnection(conn) {
+    if (!state.profileDraft) return;
+    var removed = state.profileDraft.removedConnections || [];
+    removed.push({ id: conn.id, headerNames: (conn.headerNames || []).slice() });
+    state.profileDraft.removedConnections = removed;
+  }
+
+  // Build the { id, url, transport, authMode, bearerToken?, headers? } body for
+  // the test endpoint from the open editor. Only NON-EMPTY typed secrets are
+  // included — an empty box means "use the stored/env value" server-side.
+  function connectionTestBody(editor) {
+    var id = editor.id || connectionSlug(editor.displayName);
+    var body = {
+      id: id,
+      url: String(editor.url || "").trim(),
+      transport: editor.transport,
+      authMode: editor.authMode
+    };
+    if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
+      body.bearerToken = editor.bearerToken;
+    }
+    var headers = {};
+    var names = editor.headerNames || [];
+    var values = editor.headerValues || [];
+    var hasHeader = false;
+    names.forEach(function (name, i) {
+      var trimmedName = String(name || "").trim();
+      var value = values[i];
+      if (trimmedName && value) { headers[trimmedName] = value; hasHeader = true; }
+    });
+    if (hasHeader) body.headers = headers;
+    return body;
+  }
+
+  // POST the UNSAVED form to the test endpoint. On success, replace discoveredTools
+  // with the fresh results — RE-TEST RESETS APPROVALS: every new tool defaults
+  // checked, but a tool that was previously approved AND still exists keeps its
+  // check. On failure, mark the editor failed + record the safe statusText.
+  function testConnection() {
+    var editor = state.connectionEditor;
+    if (!editor || editor.testing) return;
+    if (!editor.trusted || !String(editor.url || "").trim()) return;
+    editor.testing = true;
+    editor.testError = "";
+    editor.error = "";
+    render();
+    postJson("/admin/api/mcp/test", "POST", connectionTestBody(editor)).then(function (body) {
+      var current = state.connectionEditor;
+      if (!current) return;
+      current.testing = false;
+      if (body && body.ok) {
+        var tools = (body.tools || []).map(function (tool) {
+          var t = { name: tool.name };
+          if (tool.title !== undefined) t.title = tool.title;
+          if (tool.description !== undefined) t.description = tool.description;
+          return t;
+        });
+        current.discoveredTools = tools;
+        // A (re-)test REPLACES discoveredTools and RESETS approvals: every fresh
+        // tool defaults checked, so a previously-approved tool that still exists
+        // keeps its check and a vanished approval simply cannot survive.
+        current.checked = tools.map(function () { return true; });
+        current.lifecycleStatus = "ready";
+        current.statusText = "";
+        current.lastCheckedAt = Date.now();
+        current.testError = "";
+      } else {
+        current.lifecycleStatus = "failed";
+        current.statusText = (body && body.message) || "Could not connect to this MCP server.";
+        current.testError = current.statusText;
+        current.discoveredTools = [];
+        current.checked = [];
+      }
+      markProfileDirty();
+      render();
+    }).catch(function (error) {
+      var current = state.connectionEditor;
+      if (!current) return;
+      current.testing = false;
+      current.lifecycleStatus = "failed";
+      current.statusText = (error && (error.serverMessage || error.message)) || "Could not connect to this MCP server.";
+      current.testError = current.statusText;
+      markProfileDirty();
+      render();
+    });
+  }
+
+  // Turn an open editor into a saved connection POLICY entry (never a secret).
+  // allowedTools is the currently-checked subset of discoveredTools.
+  function connectionFromEditor(editor) {
+    var id = editor.id || connectionSlug(editor.displayName);
+    var headerNames = (editor.headerNames || []).map(function (name) { return String(name || "").trim(); }).filter(function (name) { return !!name; });
+    var discovered = (editor.discoveredTools || []).map(function (tool) {
+      var t = { name: tool.name };
+      if (tool.title !== undefined) t.title = tool.title;
+      if (tool.description !== undefined) t.description = tool.description;
+      return t;
+    });
+    var checked = editor.checked || [];
+    var allowed = discovered.filter(function (tool, i) { return checked[i] !== false; }).map(function (tool) { return tool.name; });
+    var conn = {
+      id: id,
+      displayName: String(editor.displayName || "").trim(),
+      url: String(editor.url || "").trim(),
+      transport: editor.transport,
+      authMode: editor.authMode,
+      headerNames: headerNames,
+      trusted: !!editor.trusted,
+      enabled: !!editor.enabled,
+      lifecycleStatus: editor.lifecycleStatus || "pending",
+      statusText: editor.statusText || "",
+      discoveredTools: discovered,
+      allowedTools: allowed
+    };
+    if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
+    return conn;
+  }
+
+  // Stage the transient secrets typed into an editor for the settings PUT that
+  // saveProfile issues after the profile PATCH. Only non-empty values are staged;
+  // an empty box leaves the stored/env value untouched. NEVER goes in the PATCH.
+  function stagePendingSecrets(id, editor) {
+    if (!state.profileDraft) return;
+    var pending = state.profileDraft.pendingSecrets || {};
+    var entry = pending[id] || { headerNames: [] };
+    entry.headerNames = (editor.headerNames || []).map(function (name) { return String(name || "").trim(); }).filter(function (name) { return !!name; });
+    if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
+      entry.bearerToken = editor.bearerToken;
+    }
+    var headers = entry.headers || {};
+    var names = editor.headerNames || [];
+    var values = editor.headerValues || [];
+    names.forEach(function (name, i) {
+      var trimmedName = String(name || "").trim();
+      var value = values[i];
+      if (trimmedName && value) headers[trimmedName] = value;
+    });
+    if (Object.keys(headers).length) entry.headers = headers;
+    pending[id] = entry;
+    state.profileDraft.pendingSecrets = pending;
+  }
+
+  // "Add connection" / "Save connection" button: validate, upsert into the draft,
+  // stage typed secrets, close the editor.
+  function commitConnectionRow() {
+    var editor = state.connectionEditor;
+    if (!editor) return;
+    var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
+    var validationError = validateConnectionEditor(editor, servers);
+    if (validationError) { editor.error = validationError; render(); return; }
+    var conn = connectionFromEditor(editor);
+    if (editor.index === null || editor.index === undefined) { servers.push(conn); }
+    else { servers[editor.index] = conn; }
+    state.profileDraft.mcpServers = servers;
+    stagePendingSecrets(conn.id, editor);
+    state.connectionEditor = null;
+    markProfileDirty();
+    render();
+  }
+
+  // Commit a filled-but-not-"Added" connection editor into the draft on save, so
+  // a typed connection is never silently dropped. Mirrors commitOpenSkillEditor:
+  // returns false (and keeps the editor open with an inline error) if invalid.
+  function commitOpenConnectionEditor() {
+    var editor = state.connectionEditor;
+    if (!editor) return true;
+    // A completely empty editor is discarded silently.
+    if (!String(editor.displayName || "").trim() && !String(editor.url || "").trim()) {
+      state.connectionEditor = null;
+      return true;
+    }
+    var servers = (state.profileDraft && state.profileDraft.mcpServers) || [];
+    var validationError = validateConnectionEditor(editor, servers);
+    if (validationError) { editor.error = validationError; render(); return false; }
+    var conn = connectionFromEditor(editor);
+    if (editor.index === null || editor.index === undefined) { servers.push(conn); }
+    else { servers[editor.index] = conn; }
+    state.profileDraft.mcpServers = servers;
+    stagePendingSecrets(conn.id, editor);
+    state.connectionEditor = null;
+    return true;
+  }
+
+  // After the profile PATCH succeeds, PUT any staged secrets and DELETE the
+  // secrets of removed connections, then clear the transient state. Runs
+  // fire-and-forget: a secret write failure must not block the saved profile.
+  function flushConnectionSecrets(draft) {
+    var pending = (draft && draft.pendingSecrets) || {};
+    Object.keys(pending).forEach(function (id) {
+      var entry = pending[id];
+      var body = { headerNames: entry.headerNames || [] };
+      if (entry.bearerToken !== undefined) body.bearerToken = entry.bearerToken;
+      if (entry.headers !== undefined) body.headers = entry.headers;
+      // Only round-trip when there is actually a value to store.
+      if (body.bearerToken !== undefined || body.headers !== undefined) {
+        postJson("/admin/api/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
+      }
+    });
+    var removed = (draft && draft.removedConnections) || [];
+    removed.forEach(function (entry) {
+      postJson("/admin/api/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
+    });
+    // Clear the transient secret state — typed values never survive a save.
+    if (draft) { draft.pendingSecrets = {}; draft.removedConnections = []; }
+  }
+
   // POST the raw pasted source to the resolve endpoint and, on success, open the
   // picker with every skill pre-selected. On error, surface the server message
   // (error.serverMessage) or a friendly fallback keyed by the code (error.message,
@@ -3368,6 +4030,8 @@ details[open].advanced summary::before {
     state.profileDirty = false;
     state.skillEditor = null;
     state.skillImport = null;
+    state.connectionEditor = null;
+    state.connectionRemove = null;
     state.profileError = "";
     state.profileDraft = null;
     state.editingAgentId = null;
@@ -3391,6 +4055,9 @@ details[open].advanced summary::before {
     // Commit an open inline skill editor into the draft first — a filled-but-
     // not-"Added" skill must be saved, not silently dropped. Abort on invalid.
     if (!commitOpenSkillEditor()) return;
+    // Same for an open Connections editor — commit it into mcpServers (and stage
+    // its typed secrets) before the PATCH, or bail on an inline validation error.
+    if (!commitOpenConnectionEditor()) return;
     state.profileError = "";
     if (!draft.name) { state.profileError = "Name is required."; render(); return; }
     if (!draft.instructions) { state.profileError = "Profile instructions are required."; render(); return; }
@@ -3401,9 +4068,15 @@ details[open].advanced summary::before {
       enabled: draft.enabled,
       defaultModels: draft.defaultModels || defaultModels(),
       allowedTools: draft.allowedTools || [],
-      skills: draft.skills || []
+      skills: draft.skills || [],
+      // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
+      // construction — no token or header VALUE is ever in this array.
+      mcpServers: draft.mcpServers || []
     };
     var isEdit = !!draft.id;
+    // Capture the draft carrying the transient secrets + removals BEFORE the
+    // post-save re-clone wipes them, so the secret PUT/DELETE still run.
+    var secretsDraft = draft;
     var request;
     if (isEdit) {
       body.model = draft.model || null;
@@ -3417,6 +4090,10 @@ details[open].advanced summary::before {
       state.profileError = "";
       state.profileDirty = false;
       state.disableConfirm = false;
+      // Persist secrets by reference and clear the transient state — typed tokens
+      // never survive a save. Fire-and-forget: a secret write failure must not
+      // block the saved profile.
+      flushConnectionSecrets(secretsDraft);
       if (isEdit) {
         // Stay on the editor; re-clone the draft from the refreshed agent so the
         // form reflects exactly what persisted (and the save bar re-disables).
@@ -3444,6 +4121,8 @@ details[open].advanced summary::before {
     state.disableConfirm = false;
     state.skillEditor = null;
     state.skillImport = null;
+    state.connectionEditor = null;
+    state.connectionRemove = null;
     render();
   }
 

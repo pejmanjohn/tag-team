@@ -183,6 +183,7 @@ function runAdminPageHarness(
     agentWriteError?: { status: number; error: string; message?: string };
     skillResolution?: Record<string, unknown>;
     skillResolveError?: { status: number; error: string; message?: string };
+    mcpTestResult?: { ok: true; tools: Array<{ name: string; title?: string; description?: string }> } | { ok: false; code: string; message: string };
   } = {},
 ): {
   app: FakeElement;
@@ -198,6 +199,9 @@ function runAdminPageHarness(
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
+  mcpTestPosts: Array<Record<string, unknown>>;
+  mcpSecretPuts: Array<{ id: string; body: Record<string, unknown> }>;
+  mcpSecretDeletes: Array<{ id: string; body: Record<string, unknown> }>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -213,6 +217,10 @@ function runAdminPageHarness(
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
+  const mcpTestPosts: Array<Record<string, unknown>> = [];
+  const mcpSecretPuts: Array<{ id: string; body: Record<string, unknown> }> = [];
+  const mcpSecretDeletes: Array<{ id: string; body: Record<string, unknown> }> = [];
+  const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
   const slackChannels = options.slackChannels;
@@ -343,6 +351,40 @@ function runAdminPageHarness(
           ],
         };
       return Promise.resolve(jsonResponse({ resolution }));
+    }
+    if (path === '/admin/api/mcp/test' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      mcpTestPosts.push(body);
+      const result =
+        mcpTestResult ??
+        {
+          ok: true,
+          tools: [
+            { name: 'search_issues', description: 'Search issues.' },
+            { name: 'create_issue', description: 'Create an issue (write).' },
+          ],
+        };
+      // The test endpoint always answers HTTP 200 — failures ride in the body.
+      return Promise.resolve(jsonResponse(result));
+    }
+    const mcpSecretsMatch = path.match(/^\/admin\/api\/mcp\/secrets\/([^/]+)$/);
+    if (mcpSecretsMatch) {
+      const id = decodeURIComponent(mcpSecretsMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      if (method === 'PUT') {
+        mcpSecretPuts.push({ id, body });
+        const headerNames = (body.headerNames as string[]) ?? [];
+        const headers: Record<string, string> = {};
+        headerNames.forEach((name) => {
+          headers[name] = 'stored';
+        });
+        // Source-only response — the value is never echoed back.
+        return Promise.resolve(jsonResponse({ bearer: body.bearerToken !== undefined ? 'stored' : 'missing', headers }));
+      }
+      if (method === 'DELETE') {
+        mcpSecretDeletes.push({ id, body });
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
     }
     const agentPatchMatch = path.match(/^\/admin\/api\/agents\/([^/]+)$/);
     if (agentPatchMatch && method === 'PATCH') {
@@ -558,6 +600,9 @@ function runAdminPageHarness(
     agentPatchBodies,
     agentPostBodies,
     skillResolvePosts,
+    mcpTestPosts,
+    mcpSecretPuts,
+    mcpSecretDeletes,
     resolveOpsEffective() {
       assert.ok(resolveOpsEffective, 'expected C_OPS effective-config request to be pending');
       resolveOpsEffective();
@@ -1008,6 +1053,365 @@ test('saving a profile with a filled-but-not-added skill editor commits the skil
   assert.deepEqual(harness.agentPatchBodies[0]?.body.skills, [
     { name: 'incident-scribe', description: 'Build a timeline.', instructions: '# Incident Scribe', enabled: true },
   ]);
+});
+
+// ---- Connections (remote MCP servers) --------------------------------------
+
+function connectionsAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'agent_conn',
+    name: 'Conn Profile',
+    description: 'Connections profile',
+    instructions: 'Answer with connection context.',
+    enabled: true,
+    model: 'local-stub/conn',
+    defaultModels: { claude: 'anthropic/conn', 'workers-ai': '@cf/conn' },
+    allowedTools: ['lookup_channel_brief'],
+    skills: [],
+    mcpServers: [],
+    ...overrides,
+  };
+}
+
+test('the Connections section renders empty, with the STDIO-greyed form, exact security copy, and trust-gated Test', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+
+  // The section renders after Skills, empty at first, with the exact security copy.
+  assert.match(harness.app.innerHTML, /<h2 class="section-title">Connections<\/h2>/);
+  assert.match(harness.app.innerHTML, /No connections yet/);
+  assert.match(
+    harness.app.innerHTML,
+    /Only connect to servers you trust\. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent\. Uncheck write-capable tools you don&rsquo;t need\. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again\./,
+  );
+
+  // Open the add form — Name + URL + transport control appear.
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  assert.match(harness.app.innerHTML, /data-action="conn-field-name"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-field-url"/);
+
+  // STDIO is present but disabled with the Cloudflare-unsupported title.
+  assert.match(harness.app.innerHTML, /disabled title="Not supported on Cloudflare Workers">STDIO<\/button>/);
+  // Streamable HTTP and SSE are live segmented options.
+  assert.match(harness.app.innerHTML, /data-action="conn-transport" data-transport="streamable-http"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-transport" data-transport="sse"/);
+
+  // Test is disabled until BOTH url is filled and trust is checked.
+  assert.match(harness.app.innerHTML, /data-action="conn-test" disabled/);
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  // Still disabled without trust (input handler doesn't re-render, so trigger one).
+  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-test" disabled/);
+});
+
+test('testing a connection renders discovered-tool checkboxes all checked and carries policy (not the token) into the save body', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  // Switch to bearer auth and paste a token — the token is a TRANSIENT secret.
+  change({
+    target: {
+      value: 'bearer',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'sk-secret-token') });
+  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
+
+  // Test the connection — the endpoint gets the id/url/transport/authMode + token.
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+  assert.equal(harness.mcpTestPosts.length, 1);
+  const testBody = harness.mcpTestPosts[0] as Record<string, unknown>;
+  assert.equal(testBody.id, 'linear');
+  assert.equal(testBody.url, 'https://mcp.example.com/mcp');
+  assert.equal(testBody.authMode, 'bearer');
+  assert.equal(testBody.bearerToken, 'sk-secret-token');
+
+  // Both discovered tools render as checkboxes, all checked by default.
+  assert.match(harness.app.innerHTML, /Connected &middot; 2 tools/);
+  assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="0" checked/);
+  assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="1" checked/);
+  assert.match(harness.app.innerHTML, /search_issues/);
+  assert.match(harness.app.innerHTML, /create_issue/);
+
+  // Uncheck the write tool so only search_issues is approved.
+  change({ target: checkboxTarget({ 'data-action': 'conn-tool-toggle', 'data-index': '1' }, false) });
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="1" checked/);
+
+  // Add the connection (explicit button) and save the profile.
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  // The PATCH body carries the connection POLICY: allowedTools is the checked
+  // subset, discoveredTools is the full list, lifecycleStatus is ready.
+  assert.equal(harness.agentPatchBodies.length, 1);
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers.length, 1);
+  const conn = servers[0] as Record<string, unknown>;
+  assert.equal(conn.id, 'linear');
+  assert.equal(conn.displayName, 'Linear');
+  assert.equal(conn.authMode, 'bearer');
+  assert.equal(conn.lifecycleStatus, 'ready');
+  assert.deepEqual(conn.allowedTools, ['search_issues']);
+  assert.deepEqual(
+    (conn.discoveredTools as Array<Record<string, unknown>>).map((t) => t.name),
+    ['search_issues', 'create_issue'],
+  );
+
+  // CRITICAL: the token value is NEVER in the profile PATCH body anywhere.
+  assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies[0]?.body), /sk-secret-token/);
+  // But it WAS PUT to the settings store by reference.
+  assert.equal(harness.mcpSecretPuts.length, 1);
+  assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
+  assert.equal((harness.mcpSecretPuts[0]?.body as Record<string, unknown>).bearerToken, 'sk-secret-token');
+});
+
+test('re-testing a connection replaces discovered tools and resets approvals to the fresh set', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          {
+            id: 'linear',
+            displayName: 'Linear',
+            url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http',
+            authMode: 'none',
+            headerNames: [],
+            trusted: true,
+            enabled: true,
+            lifecycleStatus: 'ready',
+            statusText: '',
+            discoveredTools: [
+              { name: 'old_tool_a' },
+              { name: 'old_tool_b' },
+            ],
+            allowedTools: ['old_tool_a'],
+            lastCheckedAt: 1000,
+          },
+        ],
+      }),
+    ],
+    // The re-test discovers a DIFFERENT tool set — old_tool_b is gone, a new one appears.
+    mcpTestResult: {
+      ok: true,
+      tools: [
+        { name: 'old_tool_a', description: 'kept' },
+        { name: 'brand_new_tool', description: 'new' },
+      ],
+    },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+
+  // The card shows the connected pill for the persisted (1-approved) connection.
+  assert.match(harness.app.innerHTML, /Connected &middot; 1 tool/);
+
+  // Open the editor and re-test.
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+
+  // The stale old_tool_b approval is gone; both freshly-discovered tools show,
+  // all checked by default (the reset).
+  assert.match(harness.app.innerHTML, /brand_new_tool/);
+  assert.doesNotMatch(harness.app.innerHTML, /old_tool_b/);
+  assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="0" checked/);
+  assert.match(harness.app.innerHTML, /data-action="conn-tool-toggle" data-index="1" checked/);
+
+  // Save — allowedTools now reflects ONLY the fresh discovery, not the stale approval.
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.deepEqual(servers[0]?.allowedTools, ['old_tool_a', 'brand_new_tool']);
+  assert.deepEqual(
+    (servers[0]?.discoveredTools as Array<Record<string, unknown>>).map((t) => t.name),
+    ['old_tool_a', 'brand_new_tool'],
+  );
+});
+
+test('a failed test marks the connection failed with the safe status text and no tool checkboxes', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    mcpTestResult: { ok: false, code: 'unauthorized', message: 'The MCP server rejected the connection. Check the token or headers.' },
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
+  click({ target: actionTarget({ 'data-action': 'conn-test' }) });
+  await flushAsync();
+
+  // The safe failure text surfaces inline; no discovered-tool checkboxes render.
+  assert.match(harness.app.innerHTML, /The MCP server rejected the connection\. Check the token or headers\./);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-tool-toggle"/);
+
+  // Save — the connection persists as failed with the classified statusText.
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers[0]?.lifecycleStatus, 'failed');
+  assert.equal(servers[0]?.statusText, 'The MCP server rejected the connection. Check the token or headers.');
+  assert.deepEqual(servers[0]?.allowedTools, []);
+});
+
+test('removing a connection confirms in a modal and DELETEs its secrets on save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          {
+            id: 'linear',
+            displayName: 'Linear',
+            url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http',
+            authMode: 'bearer',
+            headerNames: ['X-Api-Key'],
+            trusted: true,
+            enabled: true,
+            lifecycleStatus: 'ready',
+            statusText: '',
+            discoveredTools: [{ name: 'search_issues' }],
+            allowedTools: ['search_issues'],
+            lastCheckedAt: 1000,
+          },
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  assert.match(harness.app.innerHTML, /Linear/);
+
+  // Remove opens a confirm modal rather than dropping the row immediately.
+  click({ target: actionTarget({ 'data-action': 'conn-remove', 'data-index': '0' }) });
+  assert.match(harness.app.innerHTML, /Remove Linear\?/);
+  assert.match(harness.app.innerHTML, /data-action="conn-remove-confirm"/);
+  assert.match(harness.app.innerHTML, /data-action="conn-remove-cancel"/);
+
+  // Confirm — the row is gone; empty state returns.
+  click({ target: actionTarget({ 'data-action': 'conn-remove-confirm' }) });
+  assert.match(harness.app.innerHTML, /No connections yet/);
+
+  // Save — the PATCH body has an empty mcpServers AND the secrets DELETE fires
+  // with the connection's header names.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
+  assert.equal(harness.mcpSecretDeletes.length, 1);
+  assert.equal(harness.mcpSecretDeletes[0]?.id, 'linear');
+  assert.deepEqual((harness.mcpSecretDeletes[0]?.body as Record<string, unknown>).headerNames, ['X-Api-Key']);
+});
+
+test('saving with a filled-but-not-added connection editor commits it, not drops it', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+
+  // Open the editor and fill it — but do NOT click "Add connection".
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Deepwiki') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.deepwiki.com/mcp') });
+  change({ target: checkboxTarget({ 'data-action': 'conn-trust' }, true) });
+
+  // Save changes directly — the filled editor must be committed.
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+  assert.equal(servers.length, 1);
+  assert.equal(servers[0]?.id, 'deepwiki');
+  assert.equal(servers[0]?.displayName, 'Deepwiki');
+  assert.equal(servers[0]?.trusted, true);
+});
+
+test('a duplicate connection name and a non-https URL are rejected inline before save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [
+      connectionsAgent({
+        mcpServers: [
+          {
+            id: 'linear',
+            displayName: 'Linear',
+            url: 'https://mcp.example.com/mcp',
+            transport: 'streamable-http',
+            authMode: 'none',
+            headerNames: [],
+            trusted: false,
+            enabled: true,
+            lifecycleStatus: 'pending',
+            statusText: '',
+            discoveredTools: [],
+            allowedTools: [],
+          },
+        ],
+      }),
+    ],
+  });
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+
+  // A non-https URL is rejected inline.
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Other') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'http://insecure.example.com/mcp') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  assert.match(harness.app.innerHTML, /MCP server URLs must use https\./);
+
+  // A name that slugs to the existing id is rejected as a duplicate.
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://other.example.com/mcp') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  assert.match(harness.app.innerHTML, /Another connection already uses that name\./);
 });
 
 test('saving a profile with an invalid open skill editor blocks the save and shows the error', async () => {
