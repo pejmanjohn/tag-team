@@ -5,21 +5,33 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
-import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
+import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { CustomAgentConfig, McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'admin-secret-token';
 
+interface AdminHarnessOptions {
+  adminToken?: string | undefined;
+  settings?: SettingsStore;
+  discoverMcp?: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
+}
+
 function appWithAdmin(store: SqliteConfigStore, adminToken?: string): Hono {
+  const overrides: AdminHarnessOptions = arguments.length >= 2 ? { adminToken } : {};
+  return appWithAdminOptions(store, overrides);
+}
+
+function appWithAdminOptions(store: SqliteConfigStore, options: AdminHarnessOptions = {}): Hono {
   const app = new Hono();
-  const token = arguments.length >= 2 ? adminToken : ADMIN_TOKEN;
+  const token = Object.hasOwn(options, 'adminToken') ? options.adminToken : ADMIN_TOKEN;
   // A fresh in-memory settings store keeps the assignment-PUT Slack validation
   // hermetic: with no stored bot token (and no SLACK_* env in CI), validation is
   // skipped, so these CRUD assertions keep their exact pre-validation shape and
   // never touch a file-backed store.
-  const settings = new SqliteSettingsStore(':memory:');
+  const settings = options.settings ?? new SqliteSettingsStore(':memory:');
   // Pin the provider registry: importing src/app.ts anywhere in this test
   // process records real registrations, which would otherwise make the
   // unknown-provider pre-check reject the local-stub models used here.
@@ -30,9 +42,28 @@ function appWithAdmin(store: SqliteConfigStore, adminToken?: string): Hono {
       settings,
       adminToken: token,
       knownProviders: new Set(['local-stub']),
+      ...(options.discoverMcp ? { discoverMcp: options.discoverMcp } : {}),
     }),
   );
   return app;
+}
+
+function mcpServer(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
+  return {
+    id: 'linear-mcp',
+    displayName: 'Linear',
+    url: 'https://mcp.linear.app/mcp',
+    transport: 'streamable-http',
+    authMode: 'bearer',
+    headerNames: [],
+    trusted: true,
+    enabled: true,
+    lifecycleStatus: 'ready',
+    statusText: 'Connected · 2 tools',
+    discoveredTools: [{ name: 'search' }, { name: 'create' }],
+    allowedTools: ['search'],
+    ...overrides,
+  };
 }
 
 function auth(token: string): HeadersInit {
@@ -748,6 +779,340 @@ test('admin API maps an assignment to a missing agent to a stable unknown_agent 
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), { error: 'unknown_agent' });
   } finally {
+    store.close();
+  }
+});
+
+// --- MCP Connections (Task 7) -------------------------------------------------
+
+test('admin API accepts an agent with a valid mcpServers entry and round-trips it', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const createdAgent = agent({ id: 'agent_mcp', mcpServers: [mcpServer()] });
+
+    const create = await app.request('/admin/api/agents', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify(createdAgent),
+    });
+    assert.equal(create.status, 201);
+    assert.deepEqual(await create.json(), { agent: createdAgent });
+
+    // A PATCH carrying only mcpServers must preserve the array verbatim.
+    const patched = [mcpServer({ id: 'linear-mcp', allowedTools: ['search', 'create'] })];
+    const patch = await app.request('/admin/api/agents/agent_mcp', {
+      method: 'PATCH',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ mcpServers: patched }),
+    });
+    assert.equal(patch.status, 200);
+    const body = (await patch.json()) as { agent: CustomAgentConfig };
+    assert.deepEqual(body.agent.mcpServers, patched);
+  } finally {
+    store.close();
+  }
+});
+
+test('admin API rejects mcpServers with a bad id, duplicate ids, oversize fields, or a blocked URL', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const post = (id: string, servers: unknown) =>
+      app.request('/admin/api/agents', {
+        method: 'POST',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify(agent({ id, mcpServers: servers as McpConnectionConfig[] })),
+      });
+
+    const badId = await post('agent_badid', [mcpServer({ id: 'Not_Valid' })]);
+    assert.equal(badId.status, 400);
+
+    const dup = await post('agent_dup_mcp', [
+      mcpServer({ id: 'dupe' }),
+      mcpServer({ id: 'dupe' }),
+    ]);
+    assert.equal(dup.status, 400);
+
+    const oversize = await post('agent_oversize', [mcpServer({ displayName: 'x'.repeat(81) })]);
+    assert.equal(oversize.status, 400);
+
+    // The schema-level v.check runs validateMcpUrl — a private IP literal is
+    // rejected at the write boundary, not just at turn time.
+    const blocked = await post('agent_blocked', [mcpServer({ url: 'https://10.0.0.1/mcp' })]);
+    assert.equal(blocked.status, 400);
+  } finally {
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test returns discovered tools on success (HTTP 200)', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const calls: McpConnectInput[] = [];
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async (input) => {
+        calls.push(input);
+        return { tools: [{ name: 'search', description: 'Search things' }, { name: 'create' }] };
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        bearerToken: 'tok-from-form',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      tools: [{ name: 'search', description: 'Search things' }, { name: 'create' }],
+    });
+    // The transient bearer from the body is applied to the connect headers.
+    assert.equal(calls[0]?.headers.Authorization, 'Bearer tok-from-form');
+  } finally {
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test overrides stored secrets with body-supplied values', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.linear-mcp.bearer', 'stored-token');
+    const calls: McpConnectInput[] = [];
+    const app = appWithAdminOptions(store, {
+      settings,
+      discoverMcp: async (input) => {
+        calls.push(input);
+        return { tools: [] };
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        bearerToken: 'fresh-token',
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls[0]?.headers.Authorization, 'Bearer fresh-token');
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test classifies a hung connection as timeout (HTTP 200, no raw error)', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async () => {
+        throw new Error('connect timeout after 8000ms — raw internal detail');
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { ok: boolean; code: string; message: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'timeout');
+    assert.doesNotMatch(body.message, /raw internal detail/);
+    assert.doesNotMatch(body.message, /8000ms/);
+  } finally {
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test classifies a 401 as unauthorized (HTTP 200)', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async () => {
+        throw new Error('HTTP 401 Unauthorized');
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'bearer',
+        bearerToken: 'bad',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { ok: boolean; code: string; message: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'unauthorized');
+    assert.doesNotMatch(body.message, /401/);
+  } finally {
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test returns ok:false blocked_url for a private target (HTTP 200) without calling discover', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    let discoverCalled = false;
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async () => {
+        discoverCalled = true;
+        return { tools: [] };
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://192.168.1.1/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { ok: boolean; code: string; message: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'blocked_url');
+    // No raw error text and no discover attempt against the blocked target.
+    assert.doesNotMatch(body.message, /192\.168/);
+    assert.equal(discoverCalled, false);
+  } finally {
+    store.close();
+  }
+});
+
+test('POST /admin/api/mcp/test returns 400 only for a schema-invalid body', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdminOptions(store, {
+      discoverMcp: async () => ({ tools: [] }),
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'linear-mcp' }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'invalid_request' });
+  } finally {
+    store.close();
+  }
+});
+
+test('PUT /admin/api/mcp/secrets/:id stores values and reports sources without echoing them', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request('/admin/api/mcp/secrets/linear-mcp', {
+      method: 'PUT',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        bearerToken: 'super-secret-token',
+        headers: { 'X-Api-Key': 'header-secret-value' },
+        headerNames: ['X-Api-Key'],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      bearer: string;
+      headers: Record<string, string>;
+    };
+    assert.deepEqual(body, { bearer: 'stored', headers: { 'X-Api-Key': 'stored' } });
+    // The response never echoes the secret values.
+    const raw = JSON.stringify(body);
+    assert.doesNotMatch(raw, /super-secret-token/);
+    assert.doesNotMatch(raw, /header-secret-value/);
+    // The values did land in the settings store by reference.
+    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), 'super-secret-token');
+    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), 'header-secret-value');
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('DELETE /admin/api/mcp/secrets/:id clears the bearer and named header secrets', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.linear-mcp.bearer', 'tok');
+    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'val');
+    const app = appWithAdminOptions(store, { settings });
+
+    const response = await app.request('/admin/api/mcp/secrets/linear-mcp', {
+      method: 'DELETE',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({ headerNames: ['X-Api-Key'] }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), undefined);
+    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), undefined);
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
+test('deleting an agent sweeps its mcp connection secrets from the settings store', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const app = appWithAdminOptions(store, { settings });
+    await store.createAgent(
+      agent({
+        id: 'agent_sweep',
+        mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
+      }),
+    );
+    await settings.setSetting('mcp.linear-mcp.bearer', 'tok');
+    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'val');
+
+    const response = await app.request('/admin/api/agents/agent_sweep', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), undefined);
+    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), undefined);
+  } finally {
+    settings.close?.();
     store.close();
   }
 });

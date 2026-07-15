@@ -21,6 +21,17 @@ import {
   NoAssignmentError,
   UnknownAgentError,
 } from '../config/errors.ts';
+import { classifyMcpError, McpBlockedUrlError, safeMcpFailureText } from '../config/mcp-errors.ts';
+import {
+  buildMcpRequestHeaders,
+  deleteMcpSecrets,
+  describeMcpSecretSources,
+  resolveMcpSecrets,
+  saveMcpSecrets,
+  type ResolvedMcpSecrets,
+} from '../config/mcp-secrets.ts';
+import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
+import { validateMcpUrl } from '../config/mcp-url.ts';
 import { resolveAgentModel, type ModelResolvableAgent } from '../config/model-policy.ts';
 import {
   applyResolvedProviderKeys,
@@ -84,6 +95,10 @@ interface AdminRoutesOptions {
   settings?: SettingsStore | undefined;
   adminToken?: string | undefined;
   knownProviders?: ReadonlySet<string> | undefined;
+  // Injection seam for the MCP test-connection route, mirroring how the skills
+  // resolve route takes a resolver: tests pass a mock so no real network
+  // connect is attempted; production uses the shared discover routine.
+  discoverMcp?: ((input: McpConnectInput) => Promise<McpDiscoveryResult>) | undefined;
 }
 
 const ADMIN_COOKIE = 'flue_admin';
@@ -123,6 +138,51 @@ const skillsSchema = v.pipe(
   ),
 );
 
+// A single discovered-tool record stored on a Connection's last successful
+// test. Bounded to keep the profile row small (matches types.ts limits).
+const mcpToolInfoSchema = v.object({
+  name: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120)),
+  title: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(160))),
+  description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(400))),
+});
+
+// A profile Connection (remote MCP server) — POLICY ONLY. No token/header-value
+// fields exist by construction, so a secrets-shaped payload can never smuggle a
+// value into the profile row. The v.check runs the same SSRF guard as turn time,
+// so a private/blocked URL is refused at the write boundary too.
+const mcpServerSchema = v.pipe(
+  v.object({
+    id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
+    url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
+    transport: v.picklist(['streamable-http', 'sse']),
+    authMode: v.picklist(['none', 'bearer']),
+    headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+    trusted: v.boolean(),
+    enabled: v.boolean(),
+    lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
+    statusText: v.pipe(v.string(), v.maxLength(300)),
+    discoveredTools: v.pipe(v.array(mcpToolInfoSchema), v.maxLength(50)),
+    allowedTools: v.pipe(
+      v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
+      v.maxLength(50),
+    ),
+    lastCheckedAt: v.optional(v.number()),
+  }),
+  v.check((s) => validateMcpUrl(s.url).ok, 'URL not allowed'),
+);
+
+// Reject duplicate connection ids at the write boundary — a per-profile id must
+// be unique (it becomes the `mcp__<id>__` tool prefix and the secret key), so a
+// collision is a turn-time footgun. Mirrors the unique-skill-names check.
+const mcpServersSchema = v.pipe(
+  v.array(mcpServerSchema),
+  v.check(
+    (servers) => new Set(servers.map((server) => server.id)).size === servers.length,
+    'connection ids must be unique',
+  ),
+);
+
 const agentSchema = v.object({
   id: nonEmptyString,
   name: nonEmptyString,
@@ -133,6 +193,7 @@ const agentSchema = v.object({
   defaultModels: defaultModelsSchema,
   allowedTools: v.array(v.string()),
   skills: v.optional(skillsSchema, []),
+  mcpServers: v.optional(mcpServersSchema, []),
 });
 
 const agentPatchSchema = v.partial(
@@ -145,8 +206,32 @@ const agentPatchSchema = v.partial(
     defaultModels: defaultModelsSchema,
     allowedTools: v.array(v.string()),
     skills: skillsSchema,
+    mcpServers: mcpServersSchema,
   }),
 );
+
+// Test-connection payload: the UNSAVED form. Secrets are transient (never
+// persisted here) and merged over stored/env at handler time.
+const mcpTestSchema = v.object({
+  id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+  url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
+  transport: v.picklist(['streamable-http', 'sse']),
+  authMode: v.picklist(['none', 'bearer']),
+  bearerToken: v.optional(v.string()),
+  headers: v.optional(v.record(v.string(), v.string())),
+});
+
+// Secrets PUT payload — values plus the header NAMES they map to (the settings
+// store has no prefix scan, so delete/describe need the name list).
+const mcpSecretsPutSchema = v.object({
+  bearerToken: v.optional(v.string()),
+  headers: v.optional(v.record(v.string(), v.string())),
+  headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+});
+
+const mcpSecretsDeleteSchema = v.object({
+  headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
+});
 
 const assignmentSchema = v.object({
   workspaceId: nonEmptyString,
@@ -175,6 +260,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? listRuntimeModelProviders({ registeredProviders: options.knownProviders })
       : listRuntimeModelProviders();
   const providerIds = () => options.knownProviders ?? knownProviderIds();
+  // Default to the shared connect+discover routine; tests inject a mock so no
+  // real network connect is attempted (same seam idea as the store/settings).
+  const discoverMcp = (input: McpConnectInput): Promise<McpDiscoveryResult> =>
+    (options.discoverMcp ?? discoverMcpTools)(input);
 
   const adminGate = async (c: Context, next: Next) => {
     const expected = adminToken();
@@ -453,6 +542,105 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // Test an unsaved Connection form: connect + list tools without persisting
+  // anything. A schema-invalid body is a 400; every OTHER outcome (blocked URL,
+  // unauthorized, timeout, ...) is HTTP 200 with a classified `{ ok: false }`
+  // envelope — the client renders the safe message inline, and a raw error
+  // string (which could leak internals) never crosses this boundary.
+  app.post('/admin/api/mcp/test', async (c) => {
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(mcpTestSchema, body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const input = parsed.output;
+    const validated = validateMcpUrl(input.url);
+    if (!validated.ok) {
+      // Never even attempt a connect to a blocked target: classify the SSRF
+      // rejection into the same envelope shape as a runtime failure.
+      const err = new McpBlockedUrlError(validated.reason);
+      return c.json({ ok: false, code: classifyMcpError(err), message: safeMcpFailureText(err) });
+    }
+
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    // Start from stored/env secrets for this id, then let any value typed into
+    // the unsaved form win — the operator is testing exactly what they typed.
+    const resolved = await resolveMcpSecrets(
+      input.id,
+      Object.keys(input.headers ?? {}),
+      platformEnv,
+      settingsStore,
+    );
+    const merged: ResolvedMcpSecrets = {
+      ...(input.bearerToken !== undefined ? { bearer: input.bearerToken } : {}),
+      headers: { ...resolved.headers, ...(input.headers ?? {}) },
+    };
+    if (input.bearerToken === undefined && resolved.bearer !== undefined) {
+      merged.bearer = resolved.bearer;
+    }
+    const headers = buildMcpRequestHeaders(input.authMode, merged);
+
+    try {
+      const result = await discoverMcp({
+        id: input.id,
+        url: validated.url,
+        transport: input.transport,
+        headers,
+      });
+      return c.json({ ok: true, tools: result.tools });
+    } catch (err) {
+      // Classify first — err.message may carry raw internals and must never be
+      // returned to the client.
+      return c.json({ ok: false, code: classifyMcpError(err), message: safeMcpFailureText(err) });
+    }
+  });
+
+  // Store a Connection's secrets by reference (never in the profile row). The
+  // response reports source only (`env`/`stored`/`missing`) — values are never
+  // echoed back. The profile PATCH path never touches settings; this is the one
+  // secret-write choke point alongside DELETE below.
+  app.put('/admin/api/mcp/secrets/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+      return invalidRequest(c);
+    }
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(mcpSecretsPutSchema, body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const input = parsed.output;
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const settingsStore = settings(c);
+    await saveMcpSecrets(
+      id,
+      {
+        ...(input.bearerToken !== undefined ? { bearerToken: input.bearerToken } : {}),
+        ...(input.headers !== undefined ? { headers: input.headers } : {}),
+      },
+      platformEnv,
+      settingsStore,
+    );
+    const sources = await describeMcpSecretSources(id, input.headerNames, platformEnv, settingsStore);
+    return c.json(sources);
+  });
+
+  app.delete('/admin/api/mcp/secrets/:id', async (c) => {
+    const id = c.req.param('id');
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+      return invalidRequest(c);
+    }
+    const body = await readJson(c.req);
+    const parsed = v.safeParse(mcpSecretsDeleteSchema, body);
+    if (!parsed.success) {
+      return invalidRequest(c);
+    }
+    const platformEnv = c.env as PlatformEnv | undefined;
+    await deleteMcpSecrets(id, parsed.output.headerNames, platformEnv, settings(c));
+    return c.json({ ok: true });
+  });
+
   app.get('/admin/api/agents/:id', async (c) => {
     try {
       return c.json({ agent: await store(c).getAgent(c.req.param('id')) });
@@ -509,9 +697,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         409,
       );
     }
+    // Read the connection list BEFORE deleting so a successful delete can sweep
+    // each Connection's secrets from the settings store — the client's own
+    // per-connection DELETE only fires on a Remove-then-Save, not on a whole
+    // profile delete, so this is the server-side backstop against orphaned
+    // `mcp.<id>.*` secrets.
+    let mcpServers: CustomAgentConfig['mcpServers'] = [];
+    try {
+      mcpServers = (await configStore.getAgent(agentId)).mcpServers;
+    } catch (err) {
+      if (!(err instanceof UnknownAgentError)) {
+        return internalError(c, err);
+      }
+    }
     try {
       const deleted = await configStore.deleteAgent(agentId);
-      return deleted ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
+      if (!deleted) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const platformEnv = c.env as PlatformEnv | undefined;
+      const settingsStore = settings(c);
+      for (const server of mcpServers) {
+        await deleteMcpSecrets(server.id, server.headerNames, platformEnv, settingsStore);
+      }
+      return c.body(null, 204);
     } catch (err) {
       if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
@@ -946,10 +1155,36 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): CustomAgentCon
     defaultModels: input.defaultModels,
     allowedTools: input.allowedTools,
     skills: input.skills,
-    // Interim until the Connections schema lands (plan Task 7 wires
-    // mcpServerSchema into agentSchema and passes input.mcpServers through).
-    mcpServers: [],
+    mcpServers: toMcpServers(input.mcpServers),
   };
+}
+
+// Valibot's `v.optional(...)` infers `key?: T | undefined`, which is not
+// assignable to the exact-optional (`key?: T`) fields on McpConnectionConfig
+// under `exactOptionalPropertyTypes`. Rebuild each server with conditional
+// spreads so an absent optional stays absent (never `undefined`).
+function toMcpServers(
+  servers: v.InferOutput<typeof mcpServersSchema>,
+): CustomAgentConfig['mcpServers'] {
+  return servers.map((server) => ({
+    id: server.id,
+    displayName: server.displayName,
+    url: server.url,
+    transport: server.transport,
+    authMode: server.authMode,
+    headerNames: server.headerNames,
+    trusted: server.trusted,
+    enabled: server.enabled,
+    lifecycleStatus: server.lifecycleStatus,
+    statusText: server.statusText,
+    discoveredTools: server.discoveredTools.map((tool) => ({
+      name: tool.name,
+      ...(tool.title !== undefined ? { title: tool.title } : {}),
+      ...(tool.description !== undefined ? { description: tool.description } : {}),
+    })),
+    allowedTools: server.allowedTools,
+    ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
+  }));
 }
 
 type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'model'>> & { model?: string | null };
@@ -964,6 +1199,7 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.defaultModels !== undefined) patch.defaultModels = input.defaultModels;
   if (input.allowedTools !== undefined) patch.allowedTools = input.allowedTools;
   if (input.skills !== undefined) patch.skills = input.skills;
+  if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   return patch;
 }
 

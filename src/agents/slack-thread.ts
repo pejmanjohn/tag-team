@@ -1,6 +1,7 @@
 import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
+import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { resolveAgentModel } from '../config/model-policy.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
@@ -60,10 +61,20 @@ export default defineAgent(async ({ id }) => {
   // as instructions. resolveProfileSkills dedupes names and skips invalid rows.
   const skills = resolveProfileSkills(config.agent.skills);
 
+  // MCP connection tools join at the same seam and inherit the same freeze
+  // contract (mcpServers frozen in the snapshot for channels, live for DMs;
+  // secrets always resolve live). The resolver degrades gracefully — a dead or
+  // slow server is skipped, never aborting the turn — and drops any tool whose
+  // name collides with a built-in or skill (a duplicate name kills the turn).
+  const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
+    env,
+    existingToolNames: [...tools.map((t) => t.name), ...skills.map((s) => s.name)],
+  });
+
   return {
     model: config.model,
     instructions: config.instructions,
-    tools,
+    tools: [...tools, ...mcpTools],
     ...(skills.length > 0 ? { skills } : {}),
   };
 });
