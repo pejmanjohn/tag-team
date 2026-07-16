@@ -85,14 +85,13 @@ test('discoverMcpTools defaults callTimeoutMs to 30000', async () => {
   assert.equal(calls[0]?.options.timeoutMs, 30_000);
 });
 
-test('discoverMcpTools truncates name/title/description with whitespace collapse', async () => {
+test('discoverMcpTools truncates name/description with whitespace collapse', async () => {
+  // Flue's adapter folds any MCP title into the description, so the adapted
+  // ToolDefinition never carries a title — we surface name + description only.
   const longName = 'a'.repeat(200);
-  const longTitle = 'b'.repeat(200);
   const longDesc = 'c'.repeat(500);
   const conn = fakeConnection([
-    tool('mcp__srv__' + longName, 'first   line\n\tsecond    line ' + longDesc, {
-      title: '  spaced   ' + longTitle,
-    }),
+    tool('mcp__srv__' + longName, 'first   line\n\tsecond    line ' + longDesc),
   ]);
   const { fn } = stubConnect(conn);
 
@@ -100,12 +99,10 @@ test('discoverMcpTools truncates name/title/description with whitespace collapse
   const t = result.tools[0];
   assert.ok(t);
   assert.equal(t.name.length, 120, 'name truncated to 120');
-  assert.ok(t.title !== undefined);
-  assert.equal(t.title?.length, 160, 'title truncated to 160');
+  assert.equal(t.title, undefined, 'title never surfaced (folded into description by Flue)');
   assert.equal(t.description?.length, 400, 'description truncated to 400');
   // Whitespace collapsed: no runs of 2+ spaces, tabs, or newlines survive.
   assert.ok(!/\s\s/.test(t.description ?? ''), 'description whitespace collapsed');
-  assert.ok(!/\s\s/.test(t.title ?? ''), 'title whitespace collapsed');
 });
 
 test('discoverMcpTools omits title/description when absent (exactOptional-safe)', async () => {

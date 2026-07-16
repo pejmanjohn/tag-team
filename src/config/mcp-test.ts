@@ -20,7 +20,6 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 const MAX_TOOLS = 50;
 const NAME_MAX = 120;
-const TITLE_MAX = 160;
 const DESCRIPTION_MAX = 400;
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
 
@@ -113,11 +112,13 @@ function toDiscovered(id: string, raw: ToolDefinition): McpDiscoveredTool {
   // yields empty (a name should never be blank, but stay defensive).
   const stripped = stripPrefix(id, raw.name);
   const name = truncate(stripped, NAME_MAX) ?? stripped.slice(0, NAME_MAX);
-  const title = truncate(readTitle(raw), TITLE_MAX);
+  // Flue's adapter folds any MCP tool title into the description string, so the
+  // adapted ToolDefinition never exposes a title field — we surface description
+  // only. The stored McpDiscoveredTool keeps an optional `title` for schema
+  // symmetry, populated if a future runtime ever surfaces one directly.
   const description = truncate(raw.description, DESCRIPTION_MAX);
   return {
     name,
-    ...(title ? { title } : {}),
     ...(description ? { description } : {}),
   };
 }
@@ -133,16 +134,6 @@ function stripPrefix(id: string, name: string): string {
     return name.slice(specific.length);
   }
   return name.replace(TOOL_NAME_PREFIX, '');
-}
-
-/**
- * The typed `ToolDefinition` only exposes name/description (the adapter folds
- * any MCP title into the description). Read a title defensively in case a
- * variant surfaces one directly.
- */
-function readTitle(raw: ToolDefinition): string | undefined {
-  const value = (raw as { title?: unknown }).title;
-  return typeof value === 'string' ? value : undefined;
 }
 
 /** Collapse whitespace runs to single spaces, trim, and slice to `max`. */
