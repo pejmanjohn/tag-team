@@ -91,6 +91,19 @@ test('skips servers that are disabled, untrusted, not ready, or have an empty al
   assert.deepEqual(tools, []);
 });
 
+test('returns [] without throwing when servers is undefined (pre-migration frozen snapshot)', async () => {
+  // A channel snapshot frozen before mcpServers existed deserializes with the
+  // field undefined; the factory must never throw.
+  const { fn, connected } = stubConnect({});
+  const tools = await resolveProfileMcpTools(undefined as unknown as McpConnectionConfig[], {
+    env: noSecretsEnv,
+    existingToolNames: [],
+    connect: fn,
+  });
+  assert.deepEqual(tools, []);
+  assert.deepEqual(connected, []);
+});
+
 // --- (c) intersection on stripped names -----------------------------------
 
 test('exposes only approved tools, keeping the mcp__<id>__ prefix on returned names', async () => {

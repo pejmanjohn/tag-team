@@ -48,6 +48,13 @@ export async function resolveProfileMcpTools(
   servers: McpConnectionConfig[],
   opts: ResolveProfileMcpToolsOptions,
 ): Promise<ToolDefinition[]> {
+  // A channel snapshot frozen before this field existed deserializes with
+  // `servers` undefined (the raw JSON.parse in snapshot-store does no coercion,
+  // unlike rowToAgent). Guard it exactly as resolveProfileSkills does — the
+  // factory must never throw.
+  if (!servers || servers.length === 0) {
+    return [];
+  }
   const eligible = servers.filter(
     (s) => s.enabled && s.trusted && s.lifecycleStatus === 'ready' && s.allowedTools.length > 0,
   );

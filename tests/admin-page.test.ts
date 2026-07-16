@@ -1089,7 +1089,7 @@ test('the Connections section renders empty, with the STDIO-greyed form, exact s
   assert.match(harness.app.innerHTML, /No connections yet/);
   assert.match(
     harness.app.innerHTML,
-    /Only connect to servers you trust\. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent\. Uncheck write-capable tools you don&rsquo;t need\. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again\./,
+    /Only connect to servers you trust\. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent \(prompt injection\)\. Uncheck write-capable tools you don&rsquo;t need\. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again\./,
   );
 
   // Open the add form — Name + URL + transport control appear.

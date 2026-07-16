@@ -219,6 +219,10 @@ const mcpTestSchema = v.object({
   authMode: v.picklist(['none', 'bearer']),
   bearerToken: v.optional(v.string()),
   headers: v.optional(v.record(v.string(), v.string())),
+  // The connection's known header names, so re-testing an existing connection
+  // resolves STORED header values even when the operator didn't re-type them
+  // (the client seeds those fields blank). Typed values in `headers` still win.
+  headerNames: v.optional(v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/)))),
 });
 
 // Secrets PUT payload — values plus the header NAMES they map to (the settings
@@ -568,7 +572,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // the unsaved form win — the operator is testing exactly what they typed.
     const resolved = await resolveMcpSecrets(
       input.id,
-      Object.keys(input.headers ?? {}),
+      // Union of the connection's known header names and any typed this session,
+      // so a stored value backs a header the operator didn't re-enter.
+      [...new Set([...(input.headerNames ?? []), ...Object.keys(input.headers ?? {})])],
       platformEnv,
       settingsStore,
     );

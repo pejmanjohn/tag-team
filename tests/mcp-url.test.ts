@@ -74,6 +74,29 @@ test('rejects localhost / .local / .internal / .localhost hostnames', () => {
   }
 });
 
+test('rejects trailing-dot (root-anchored FQDN) variants of blocked hosts', () => {
+  // `localhost.` resolves identically to `localhost`; a trailing dot must not
+  // dodge the blocklist.
+  for (const input of [
+    'https://localhost./mcp',
+    'https://svc.internal./x',
+    'https://printer.local./',
+  ]) {
+    const result = validateMcpUrl(input);
+    assert.equal(result.ok, false, input + ' should be rejected');
+    if (!result.ok) assert.match(result.reason, /local|internal/i);
+  }
+});
+
+test('strips a trailing dot from an accepted public FQDN', () => {
+  const result = validateMcpUrl('https://mcp.example.com./mcp');
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.ok(!result.url.includes('.com.'), 'trailing dot must be stripped: ' + result.url);
+    assert.match(result.url, /mcp\.example\.com\/mcp/);
+  }
+});
+
 test('rejects bare single-label hostnames', () => {
   const result = validateMcpUrl('https://mcp/');
   assert.equal(result.ok, false);

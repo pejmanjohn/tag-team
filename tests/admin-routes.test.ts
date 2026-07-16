@@ -914,6 +914,41 @@ test('POST /admin/api/mcp/test overrides stored secrets with body-supplied value
   }
 });
 
+test('POST /admin/api/mcp/test backs an un-retyped header with its stored value via headerNames', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    // Operator stored X-Api-Key earlier; on re-test they don't retype it, but
+    // the client sends the header NAME so the server can resolve the stored value.
+    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'stored-key');
+    const calls: McpConnectInput[] = [];
+    const app = appWithAdminOptions(store, {
+      settings,
+      discoverMcp: async (input) => {
+        calls.push(input);
+        return { tools: [] };
+      },
+    });
+
+    const response = await app.request('/admin/api/mcp/test', {
+      method: 'POST',
+      headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: 'linear-mcp',
+        url: 'https://mcp.linear.app/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+        headerNames: ['X-Api-Key'],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls[0]?.headers['X-Api-Key'], 'stored-key');
+  } finally {
+    settings.close?.();
+    store.close();
+  }
+});
+
 test('POST /admin/api/mcp/test classifies a hung connection as timeout (HTTP 200, no raw error)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {

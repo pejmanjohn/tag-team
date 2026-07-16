@@ -2117,7 +2117,7 @@ details[open].advanced summary::before {
       '<svg class="ic" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"/></svg>Add connection</button></div>';
     var hint = 'Remote MCP servers this profile can call. Only connect to servers you trust.';
     // The security-boundary copy is exact per the spec — do not paraphrase.
-    var security = '<p class="conn-security">Only connect to servers you trust. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent. Uncheck write-capable tools you don&rsquo;t need. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
+    var security = '<p class="conn-security">Only connect to servers you trust. MCP servers can see the conversation content sent to their tools, and a malicious server can try to manipulate the agent (prompt injection). Uncheck write-capable tools you don&rsquo;t need. Your profile stores connection policy and tool approvals only &mdash; tokens live in the settings store and are never shown again.</p>';
     var body = list + newForm + addButton;
     if (!list && !newForm) {
       body = '<div class="empty"><p class="field-label">No connections yet</p><p class="hint">Add a remote MCP server by URL to give this profile extra tools.</p></div>' + addButton;
@@ -3777,12 +3777,17 @@ details[open].advanced summary::before {
     var names = editor.headerNames || [];
     var values = editor.headerValues || [];
     var hasHeader = false;
+    var headerNames = [];
     names.forEach(function (name, i) {
       var trimmedName = String(name || "").trim();
       var value = values[i];
+      if (trimmedName) headerNames.push(trimmedName);
       if (trimmedName && value) { headers[trimmedName] = value; hasHeader = true; }
     });
     if (hasHeader) body.headers = headers;
+    // Always send the header NAMES so the server can back an un-retyped header
+    // with its stored value on a re-test (typed values above still win).
+    if (headerNames.length) body.headerNames = headerNames;
     return body;
   }
 
@@ -3940,6 +3945,20 @@ details[open].advanced summary::before {
   // fire-and-forget: a secret write failure must not block the saved profile.
   function flushConnectionSecrets(draft) {
     var pending = (draft && draft.pendingSecrets) || {};
+    var removed = (draft && draft.removedConnections) || [];
+    // A same-slug remove + re-add in one save stages BOTH a DELETE and a PUT for
+    // that id. Skip the DELETE when a value-bearing PUT is pending for the same
+    // id, so an out-of-order DELETE can't clobber the just-stored secret. (Any
+    // header the re-add dropped is left orphaned but inert — turn time only
+    // sends headers named on the current connection.)
+    function pendingHasValue(id) {
+      var e = pending[id];
+      return !!e && (e.bearerToken !== undefined || e.headers !== undefined);
+    }
+    removed.forEach(function (entry) {
+      if (pendingHasValue(entry.id)) return;
+      postJson("/admin/api/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
+    });
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
       var body = { headerNames: entry.headerNames || [] };
@@ -3949,10 +3968,6 @@ details[open].advanced summary::before {
       if (body.bearerToken !== undefined || body.headers !== undefined) {
         postJson("/admin/api/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
       }
-    });
-    var removed = (draft && draft.removedConnections) || [];
-    removed.forEach(function (entry) {
-      postJson("/admin/api/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
     });
     // Clear the transient secret state — typed values never survive a save.
     if (draft) { draft.pendingSecrets = {}; draft.removedConnections = []; }

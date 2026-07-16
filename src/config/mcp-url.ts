@@ -21,7 +21,11 @@ export function validateMcpUrl(raw: string): McpUrlResult {
   if (url.username || url.password) {
     return { ok: false, reason: 'URLs with embedded credentials are not allowed.' };
   }
-  const host = url.hostname.toLowerCase();
+  const rawHost = url.hostname.toLowerCase();
+  // A single trailing dot marks a root-anchored FQDN: `localhost.` resolves
+  // exactly like `localhost`, so without stripping it the blocklist below is
+  // trivially dodged by appending a dot. IPv6 literals never carry one.
+  const host = rawHost.endsWith('.') ? rawHost.slice(0, -1) : rawHost;
   const bracketless = host.replace(/^\[|\]$/g, '');
   if (host === 'localhost' || BLOCKED_HOSTNAME_SUFFIXES.some((s) => host.endsWith(s))) {
     return { ok: false, reason: 'Local and internal hostnames are not allowed.' };
@@ -38,6 +42,11 @@ export function validateMcpUrl(raw: string): McpUrlResult {
     return { ok: false, reason: 'Bare hostnames are not allowed — use a fully qualified domain.' };
   }
   url.hash = '';
+  // Return the dot-stripped host so the persisted/fetched URL matches what the
+  // guard actually validated (no trailing-dot variant slips downstream).
+  if (rawHost.endsWith('.')) {
+    url.hostname = host;
+  }
   return { ok: true, url: url.toString() };
 }
 
