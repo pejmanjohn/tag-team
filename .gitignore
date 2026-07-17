@@ -12,7 +12,6 @@ dist-node/
 .flue-vite.wrangler.jsonc
 coverage/
 tmp/
-.gstack/
 
 # Internal working docs (plans, decision records, rehearsal artifacts) stay
 # out of the public repo; the npm publish guard already treats them as
