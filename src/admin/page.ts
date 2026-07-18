@@ -1170,6 +1170,9 @@ details[open].advanced summary::before {
     addChannelInvite: "",
     addChannelManual: false,
     addChannelSelected: "",
+    // Optional profile carried into the add-channel flow (profile page's
+    // "Add a new channel with this profile"); empty means the Default profile.
+    addChannelAgentId: "",
     slackChannels: null,
     slackChannelsError: "",
     slackChannelsLoading: false,
@@ -1693,6 +1696,13 @@ details[open].advanced summary::before {
     return agent ? agent.name : "a profile";
   }
 
+  // The profile a newly added channel will get: the one carried in from the
+  // profile page's "Add a new channel with this profile", else the Default.
+  function addChannelAgentName() {
+    var carried = agentById(state.addChannelAgentId);
+    return carried ? carried.name : defaultAgentName();
+  }
+
   function findSlackChannel(channelId) {
     var channels = (state.slackChannels && state.slackChannels.channels) || [];
     return channels.find(function (channel) { return channel.id === channelId; }) || null;
@@ -1737,7 +1747,7 @@ details[open].advanced summary::before {
   function addChannelPanelHtml() {
     if (!state.addChannelOpen) return "";
     var head = '<div class="section-head"><div><h2 class="section-title">Add a channel</h2>' +
-      '<p class="hint">Attach to a Slack channel. Chickpea answers @mentions there with the ' + esc(defaultAgentName()) + ' profile &mdash; customize it on the channel page after.</p></div>' +
+      '<p class="hint">Attach to a Slack channel. Chickpea answers @mentions there with the ' + esc(addChannelAgentName()) + ' profile &mdash; customize it on the channel page after.</p></div>' +
       '<button type="button" class="btn btn-ghost btn-sm" data-action="cancel-add-channel">Cancel</button></div>';
     if (!isSlackConnected()) {
       return '<section class="section">' + head +
@@ -1745,9 +1755,9 @@ details[open].advanced summary::before {
         '<p class="hint">Add the bot token and signing secret above, then come back to pick a channel.</p></div></section>';
     }
     // Workspace — locked to the install (card 05). Never an editable field once
-    // teamId is known; the lock icon + "locked" chip make the constraint plain.
+    // teamId is known; the "locked" chip makes the constraint plain.
     var workspaceRow = '<div class="field"><label class="field-label">Workspace</label>' +
-      '<div class="bundle-row"><span class="b-name">' + icon("lock-closed") + esc(connectedTeamName()) + '</span>' +
+      '<div class="bundle-row"><span class="b-name">' + esc(connectedTeamName()) + '</span>' +
       '<span class="b-meta">' + esc(connectedTeamId()) + '</span><span class="spacer"></span>' +
       '<span class="chip">locked</span></div>' +
       '<p class="hint">Locked to the workspace Chickpea is installed in. To use another, reinstall Chickpea there.</p></div>';
@@ -1807,7 +1817,7 @@ details[open].advanced summary::before {
   // shows a green check, and the future step is dimmed (and clickable to jump
   // ahead). The paste form is the whole submit surface — validated live.
   function slackStepBoldHint(text) {
-    return '<b style="font-weight:500; color:var(--text);">' + text + '</b>';
+    return '<b style="font-weight:700; color:var(--text);">' + text + '</b>';
   }
 
   function slackStep1Html(conn) {
@@ -1859,7 +1869,6 @@ details[open].advanced summary::before {
       '<div class="paste-pair"><div class="pair-head"><span class="n">b</span><span>' +
       slackStepBoldHint("Bot User OAuth Token") + ' &mdash; in the left sidebar, click the <span class="chip">OAuth &amp; Permissions</span> tab. Under the <span class="chip">OAuth Tokens</span> heading, click the green ' + slackStepBoldHint("Install to (your workspace)") + ' button &rarr; Allow. The token (<span class="chip">xoxb-&hellip;</span>) appears there after installing. Copy it.</span></div>' +
       '<input class="input mono" name="botToken" type="password" autocomplete="off" aria-label="Bot token" placeholder="Paste the xoxb-&hellip; token here" value="' + esc(state.slackDraft.botToken) + '" data-action="slack-bot-token"></div>' +
-      '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Not the App-Level Token (<span class="chip">xapp-&hellip;</span>, that&rsquo;s Socket Mode) and not the deprecated Verification Token. Only <span class="chip">xoxb-&hellip;</span> and the Signing Secret.</span></div>' +
       '<div class="full" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">' + validateBtn + validateTail + '</div>' +
       '</form></div></div>';
   }
@@ -2582,8 +2591,10 @@ details[open].advanced summary::before {
     if (!state.attachPicker) return "";
     var candidates = attachCandidates(draft.id);
     if (!candidates.length) {
-      return '<div class="bundle-row"><span class="hint">Every channel already uses this profile. Add more channels from the Channels list.</span>' +
-        '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
+      return '<div class="bundle-row"><span class="hint">All added channels already use this profile.</span>' +
+        '<span class="spacer"></span>' +
+        '<button type="button" class="btn btn-soft btn-sm" data-action="attach-new-channel" data-agent="' + esc(draft.id) + '">Add a new channel with this profile</button>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-action="attach-cancel">Close</button></div>';
     }
     var options = candidates.map(function (assignment, index) {
       var current = agentById(assignment.agentId);
@@ -3336,8 +3347,12 @@ details[open].advanced summary::before {
   function modelWarning(model) {
     if (!model || model.indexOf("/") < 1) return "";
     var provider = model.slice(0, model.indexOf("/"));
-    var known = state.models.providers.some(function (item) { return item.configured && item.id === provider; });
-    return known ? "" : "Free text accepted; provider not detected in this install.";
+    var entry = state.models.providers.find(function (item) { return item.id === provider; });
+    if (!entry) return "Free text accepted; provider not detected in this install.";
+    // Known provider, no key: the pin will save, but every reply fails with a
+    // sanitized provider error — say so here instead of letting it surprise.
+    if (!entry.configured) return "No key for this provider yet — replies with this model will fail until one is added in Settings.";
+    return "";
   }
 
   function slugId(name) {
@@ -3571,7 +3586,7 @@ details[open].advanced summary::before {
     if (action === "dismiss-slack-toast") { state.slackToastDismissed = true; render(); }
     if (action === "select-channel") { state.view = "channels"; selectActive(target.getAttribute("data-workspace"), target.getAttribute("data-channel")); render(); }
     if (action === "toggle-add-channel") { openAddChannel(); }
-    if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; render(); }
+    if (action === "cancel-add-channel") { state.addChannelOpen = false; state.addChannelManual = false; state.addChannelError = ""; state.addChannelAgentId = ""; render(); }
     if (action === "refresh-channels") { loadSlackChannels(true); }
     if (action === "toggle-manual-channel") { state.addChannelManual = !state.addChannelManual; state.addChannelError = ""; render(); }
     if (action === "toggle-swap") { state.swapOpen = !state.swapOpen; render(); }
@@ -3600,6 +3615,7 @@ details[open].advanced summary::before {
     }
     // Footer "Add to channels" picker.
     if (action === "attach-open" && state.profileDraft) { state.attachPicker = true; render(); }
+    if (action === "attach-new-channel") { state.attachPicker = false; openAddChannel(target.getAttribute("data-agent") || ""); }
     if (action === "attach-cancel") { state.attachPicker = false; render(); }
     if (action === "attach-channel-confirm" && state.profileDraft) { attachProfileToChannel(); }
     if (action === "cancel-create") { state.profileScreen = "list"; state.profileDraft = null; state.profileError = ""; state.profileDirty = false; state.skillEditor = null; state.skillImport = null; state.connectionEditor = null; state.connectionRemove = null; state.modelPickerOpen = false; state.modelPickerFilter = ""; render(); }
@@ -3975,11 +3991,12 @@ details[open].advanced summary::before {
     render();
   }
 
-  function openAddChannel() {
+  function openAddChannel(agentId) {
     state.view = "channels";
     state.addChannelOpen = true;
     state.addChannelError = "";
     state.addChannelInvite = "";
+    state.addChannelAgentId = agentId || "";
     render();
     // Lazily populate the picker the first time it opens (connected only).
     if (isSlackConnected() && !state.slackChannels && !state.slackChannelsLoading) {
@@ -4022,7 +4039,7 @@ details[open].advanced summary::before {
   }
 
   function addChannel(formData) {
-    var agent = defaultAgent();
+    var agent = agentById(state.addChannelAgentId) || defaultAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
     if (!agent) { fail("Create a profile before adding a channel."); return; }
     if (!isSlackConnected()) { fail("Connect Slack first."); return; }
@@ -4050,6 +4067,7 @@ details[open].advanced summary::before {
       state.addChannelOpen = false;
       state.addChannelManual = false;
       state.addChannelError = "";
+      state.addChannelAgentId = "";
       state.channelFormDraft.channelId = "";
       state.active = { workspaceId: workspaceId, channelId: channelId };
       // Slack's authoritative name (server override) becomes the display label.
@@ -4661,6 +4679,7 @@ html { color-scheme:light; }
 body { background:var(--bg); color:var(--text-2); font-family:var(--font); min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; -webkit-font-smoothing:antialiased; }
 .card { background:var(--well); box-shadow:inset 0 0 0 1px var(--line); border-radius:14px; padding:28px; width:100%; max-width:380px; display:flex; flex-direction:column; gap:14px; }
 h1 { color:var(--text); font-size:1.0625rem; font-weight:600; }
+.pea-login { display:block; height:44px; width:44px; }
 p { font-size:0.8125rem; line-height:1.5; }
 .err { color:var(--danger); }
 label { color:var(--text); display:block; font-size:0.8125rem; font-weight:500; margin-bottom:6px; }
@@ -4673,6 +4692,7 @@ button:hover { background:var(--ember-bright); }
 </head>
 <body>
 <form class="card" method="get" action="/admin">
+  <svg class="pea-login" viewBox="8 9 32 32" aria-hidden="true" focusable="false"><circle cx="24" cy="25" r="15.5" fill="#E3AC45"></circle><circle cx="17" cy="17.5" r="4.2" fill="#F4D084"></circle><circle cx="18.5" cy="24" r="1.9" fill="#3B3220"></circle><circle cx="29.5" cy="24" r="1.9" fill="#3B3220"></circle><path d="M19 29 Q24 32.5 29 29" fill="none" stroke="#3B3220" stroke-width="1.8" stroke-linecap="round"></path><circle cx="15.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle><circle cx="32.5" cy="28.5" r="2" fill="#DC8A4F" opacity="0.4"></circle></svg>
   <h1>Sign in to Chickpea</h1>
   <p>Enter your <span class="mono">TAG_ADMIN_TOKEN</span> to open the admin.</p>
   ${error}

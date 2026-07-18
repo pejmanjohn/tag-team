@@ -3,7 +3,7 @@
   "display_information": {
     "name": "Chickpea",
     "description": "A self-hosted, model-agnostic AI agent for Slack.",
-    "background_color": "#1a1d21"
+    "background_color": "#fffdf6"
   },
   "features": {
     "app_home": {
