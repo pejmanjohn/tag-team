@@ -801,7 +801,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       if (info?.ok && info.channel) {
-        // (c) Membership drives the UI's "invite @Chickpea or it never hears
+        // (c) Membership drives the UI's "invite @Tag or it never hears
         //     mentions" reminder; Slack's authoritative name becomes the label.
         isMember = info.channel.isMember;
         if (info.channel.name) {
@@ -1250,7 +1250,7 @@ function connectedWorkspaceLabel(team: SlackTeamInfo): string {
 function workspaceMismatchMessage(team: SlackTeamInfo, workspaceId: string): string {
   return (
     `Chickpea is connected to ${connectedWorkspaceLabel(team)}, but this channel belongs to a ` +
-    `different workspace (${workspaceId}). Add Chickpea to ${team.teamName ?? 'the connected workspace'} ` +
+    `different workspace (${workspaceId}). Add Tag to ${team.teamName ?? 'the connected workspace'} ` +
     `in Slack, or connect Chickpea to that workspace instead.`
   );
 }
@@ -1259,7 +1259,7 @@ function channelNotFoundMessage(channelId: string, team: SlackTeamInfo): string 
   const where = team.teamName ? ` in ${team.teamName}` : '';
   return (
     `Slack could not find channel ${channelId}${where}. Check for a typo, make sure the channel ` +
-    `is in the connected workspace, and if it is private invite @Chickpea to it first — then try again.`
+    `is in the connected workspace, and if it is private invite @Tag to it first — then try again.`
   );
 }
 

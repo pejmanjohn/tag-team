@@ -116,7 +116,7 @@ For live Slack testing without a public tunnel, `npm run slack:bridge` forwards 
 
 ### Bot identity
 
-`slack-app-manifest.json` owns the app name ("Tag Team"), the bot display name ("Tag"), and the description — the wizard's deep-link carries all of it, so a from-manifest install needs no manual field entry. The avatar is the one manual step: upload `assets/bot-avatar.png` (referenced by `src/config/identity.ts`) under the app's Display Information, then verify the live name and icon:
+`slack-app-manifest.json` owns the app name ("Chickpea"), the bot display name ("Tag"), and the description — the wizard's deep-link carries all of it, so a from-manifest install needs no manual field entry. The avatar is the one manual step: upload `assets/bot-avatar.png` (referenced by `src/config/identity.ts`) under the app's Display Information, then verify the live name and icon:
 
 ```bash
 SLACK_BOT_TOKEN="<bot-token>" node scripts/verify-identity-live.mjs

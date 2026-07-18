@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/slackapi/manifest-schema/main/manifest.schema.json",
   "display_information": {
-    "name": "Tag Team",
+    "name": "Chickpea",
     "description": "A self-hosted, model-agnostic AI agent for Slack.",
     "background_color": "#1a1d21"
   },

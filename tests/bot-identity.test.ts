@@ -50,7 +50,7 @@ test('Slack manifest owns a non-empty bot display name', () => {
   assert.ok(typeof displayName === 'string');
   assert.notEqual(displayName.trim(), '');
   // The Slack app name and the bot user's display name are independent fields:
-  // the app installs as "Tag Team" (marketplace/install identity) while the bot
+  // the app installs as "Chickpea" (marketplace/install identity) while the bot
   // answers as "@Tag" (the mention handle). Both must be present and non-empty;
   // they are intentionally NOT required to be equal.
   assert.ok(typeof botDisplayName === 'string');

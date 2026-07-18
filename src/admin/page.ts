@@ -1624,7 +1624,7 @@ details[open].advanced summary::before {
     return '<main class="main"><div class="main-inner">' + invite + addPanel +
       '<div class="main-head"><div style="display:flex; flex-direction:column; gap:2px;">' +
       '<h1 class="page-title mono-title">' + esc(channelLabel(assignment)) + '</h1>' +
-      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as @Chickpea.</p>' +
+      '<p class="hint">What Chickpea can do in this channel. It answers mentions here, always as @Tag.</p>' +
       '</div><label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="channel-enabled" ' + (enabled ? "checked" : "") + ' aria-label="Channel enabled"></span></label></div>' +
       profileSectionHtml(agent, assignment) +
@@ -1657,7 +1657,7 @@ details[open].advanced summary::before {
       '<h1 class="page-title" style="font-size:1.1875rem;">Choose where Chickpea answers</h1>' +
       '<p class="hint" style="max-width:452px; font-size:0.875rem; line-height:1.55;">Chickpea only answers where you allow it. Pick a Slack channel to start &mdash; it comes with sensible defaults, and you can customize instructions, model, and tools per channel anytime.</p>' +
       '<button type="button" class="btn btn-primary" style="margin-top:4px; padding:9px 18px;" data-action="toggle-add-channel">Choose a channel</button>' +
-      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">@Chickpea</span> &mdash; direct messages already work.</p>' +
+      '<p class="hint">Want proof right now? DM <span class="mono" style="color:var(--text-2);">@Tag</span> &mdash; direct messages already work.</p>' +
       '</div>';
   }
 
@@ -1706,14 +1706,14 @@ details[open].advanced summary::before {
 
   function inviteReminderHtml() {
     if (!state.addChannelInvite) return "";
-    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Chickpea to finish</p>' +
+    return '<div class="empty" style="border-left:2px solid var(--ember);"><p class="field-label">Invite Tag to finish</p>' +
       '<p class="hint">' + esc(state.addChannelInvite) + '</p></div>';
   }
 
   function channelOptionsHtml() {
     var channels = (state.slackChannels && state.slackChannels.channels) || [];
     if (channels.length === 0) {
-      return '<option value="">No channels found &mdash; invite @Chickpea, then Refresh</option>';
+      return '<option value="">No channels found &mdash; invite @Tag, then Refresh</option>';
     }
     var selected = state.addChannelSelected || channels[0].id;
     // Grouped PUBLIC / PRIVATE (native optgroups). No lock emoji: privacy is
@@ -1775,7 +1775,7 @@ details[open].advanced summary::before {
         icon("chevron-down", "select-caret") + '</span>' +
         refreshBtn + '</div>' +
         truncated +
-        '<p class="hint">Don\\'t see it? Invite @Chickpea to the channel in Slack, then click Refresh. ' +
+        '<p class="hint">Don\\'t see it? Invite @Tag to the channel in Slack, then click Refresh. ' +
         '<button type="button" class="link-btn" data-action="toggle-manual-channel">Enter ID manually</button></p></div>';
     }
     var foot = '<div class="save-bar" style="justify-content:flex-start;">' +
@@ -1947,7 +1947,7 @@ details[open].advanced summary::before {
       // Provider, and Snapshot are diagnostic and move under Advanced (card 07).
       body = '<div class="well"><dl>' +
         '<div class="kv"><dt>Profile</dt><dd>' + esc(profile.name) + ' ' + enabledBadge(profile.enabled) + '</dd></div>' +
-        '<div class="kv"><dt>Replies as</dt><dd>Chickpea &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
+        '<div class="kv"><dt>Replies as</dt><dd>Tag &mdash; the install-wide Slack identity shared by every channel</dd></div>' +
         '<div class="kv"><dt>Instructions</dt><dd><div class="instructions-preview">' + instructionLayersHtml(state.effective.instructionLayers) + '</div></dd></div>' +
         '</dl></div>';
     }
@@ -2012,7 +2012,7 @@ details[open].advanced summary::before {
     var cards = state.agents.map(profileCardHtml).join("");
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Profiles</h1>' +
-      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
+      '<p class="hint" style="max-width:58ch;">A profile is the reusable behavior you attach to a channel &mdash; its instructions, model, skills, and connections. One profile can answer in many channels, and it always replies as <b style="font-weight:500; color:var(--text);">@Tag</b> &mdash; a profile changes how Chickpea answers, never who it is.</p>' +
       '</div><button type="button" class="btn btn-primary" style="flex-shrink:0;" data-action="new-profile">New profile</button></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Your profiles</h2><p class="hint">Everything Chickpea can be in this workspace.</p></div></div>' +
       (cards || '<div class="empty"><p class="field-label">No profiles yet</p><p class="hint">Create one to give Chickpea a behavior you can attach to channels.</p></div>') +
@@ -2443,7 +2443,7 @@ details[open].advanced summary::before {
     var err = state.profileError === "Name is required.";
     return '<div class="field"><label class="field-label" for="p-name">Name</label>' +
       '<input class="input" id="p-name" name="name" type="text" value="' + esc(draft.name) + '"' + (err ? ' style="outline:2px solid var(--danger); outline-offset:-1px;"' : "") + ' data-action="profile-name">' +
-      '<p class="hint">Shown here in /admin only. Replies in Slack always post as @Chickpea.</p>' +
+      '<p class="hint">Shown here in /admin only. Replies in Slack always post as @Tag.</p>' +
       (err ? '<p class="field-error">Name is required.</p>' : "") + '</div>';
   }
 
@@ -2469,7 +2469,7 @@ details[open].advanced summary::before {
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       '<h1 class="page-title">New profile</h1>' +
-      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b>.</p></div>' +
+      '<p class="hint">Create a reusable behavior you can attach to channels. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -2494,7 +2494,7 @@ details[open].advanced summary::before {
     return '<div class="main-head"><div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Profiles</button>' +
       titleRow +
-      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Chickpea</b>.</p></div>' +
+      '<p class="hint">Edit this reusable behavior. It always replies as <b style="font-weight:500; color:var(--text);">@Tag</b>.</p></div>' +
       '<label style="display:flex; align-items:center; gap:10px;"><span class="hint">' + (draft.enabled ? "Enabled" : "Disabled") + '</span>' +
       '<span class="toggle"><span class="thumb"></span><input type="checkbox" name="profile-enabled" data-action="profile-enable-toggle" ' + (draft.enabled ? "checked" : "") + ' aria-label="Profile enabled"></span></label></div>' +
       disableConfirmHtml(draft) +
@@ -4015,7 +4015,7 @@ details[open].advanced summary::before {
   function addChannelErrorText(error) {
     if (error && error.serverMessage) return error.serverMessage;
     var message = error && error.message;
-    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Chickpea if it is private.";
+    if (message === "channel_not_found") return "Slack could not find that channel in the connected workspace. Check the ID, and invite @Tag if it is private.";
     if (message === "workspace_mismatch") return "That channel belongs to a different workspace than the one Chickpea is connected to.";
     if (message === "unknown_agent") return "The profile no longer exists. Reload and try again.";
     return message || "Could not add the channel.";
@@ -4055,7 +4055,7 @@ details[open].advanced summary::before {
       // Slack's authoritative name (server override) becomes the display label.
       var savedLabel = normalizeChannelLabel((result && result.assignment && result.assignment.channelLabel) || label || channelId);
       state.addChannelInvite = result && result.isMember === false
-        ? "#" + savedLabel + " was added, but @Chickpea isn't a member of it yet, so it won't hear mentions there. Invite @Chickpea to #" + savedLabel + " in Slack — no need to come back here."
+        ? "#" + savedLabel + " was added, but @Tag isn't a member of it yet, so it won't hear mentions there. Invite @Tag to #" + savedLabel + " in Slack — no need to come back here."
         : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });

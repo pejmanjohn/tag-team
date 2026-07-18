@@ -16,7 +16,7 @@
  *
  *   3. Delete the Slack app — MANUAL (no bot-token API for this):
  *        https://api.slack.com/apps -> the app in your test workspace (e.g.
- *        "Tag Team" in "Acme Inc") -> Basic Information -> Delete App -> confirm.
+ *        "Chickpea" in "Acme Inc") -> Basic Information -> Delete App -> confirm.
  *      Each fresh install's wizard creates a NEW app, so always delete the old.
  *
  *   4. Clear local dev state (this script, with --yes): removes tmp/ and

@@ -124,7 +124,7 @@ test('wizard GET reports missing credentials and substitutes the request origin 
       assert.equal(manifest.settings.event_subscriptions.request_url, body.requestUrl);
       // Editor-tooling key must not leak into Slack's manifest import.
       assert.equal(manifest.$schema, undefined);
-      assert.equal(manifest.display_information.name, 'Tag Team');
+      assert.equal(manifest.display_information.name, 'Chickpea');
     } finally {
       settings.close();
     }

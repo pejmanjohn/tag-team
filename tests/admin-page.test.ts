@@ -1700,7 +1700,7 @@ test('add-channel opens a main-panel picker with the locked workspace and a chan
   assert.match(harness.app.innerHTML, /secret-room/);
   assert.match(harness.app.innerHTML, /not a member/);
   // Helper copy + the manual fallback affordance.
-  assert.match(harness.app.innerHTML, /Invite @Chickpea to the channel in Slack, then click Refresh/);
+  assert.match(harness.app.innerHTML, /Invite @Tag to the channel in Slack, then click Refresh/);
   assert.match(harness.app.innerHTML, /Enter ID manually/);
   // The picker fetched the proxy exactly once on open.
   assert.equal(harness.channelListCalls.length, 1);
@@ -1739,8 +1739,8 @@ test('add-channel submit PUTs the connected workspace id and surfaces the invite
     },
   ]);
   // isMember:false from the server drives the invite reminder (channel-specific).
-  assert.match(harness.app.innerHTML, /Invite Chickpea to finish/);
-  assert.match(harness.app.innerHTML, /Invite @Chickpea to #secret-room in Slack/);
+  assert.match(harness.app.innerHTML, /Invite Tag to finish/);
+  assert.match(harness.app.innerHTML, /Invite @Tag to #secret-room in Slack/);
 });
 
 test('the rail and add-channel affordance stay gated until Slack is connected', async () => {
