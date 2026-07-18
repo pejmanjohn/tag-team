@@ -197,8 +197,8 @@ function runAdminPageHarness(
   agentPostBodies: Array<Record<string, unknown>>;
   skillResolvePosts: Array<{ source: string }>;
   mcpTestPosts: Array<Record<string, unknown>>;
-  mcpSecretPuts: Array<{ id: string; body: Record<string, unknown> }>;
-  mcpSecretDeletes: Array<{ id: string; body: Record<string, unknown> }>;
+  mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
+  mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   resolveOpsEffective(): void;
 } {
   const app: FakeElement = { innerHTML: '' };
@@ -215,8 +215,8 @@ function runAdminPageHarness(
   const agentPostBodies: Array<Record<string, unknown>> = [];
   const skillResolvePosts: Array<{ source: string }> = [];
   const mcpTestPosts: Array<Record<string, unknown>> = [];
-  const mcpSecretPuts: Array<{ id: string; body: Record<string, unknown> }> = [];
-  const mcpSecretDeletes: Array<{ id: string; body: Record<string, unknown> }> = [];
+  const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
+  const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpTestResult = options.mcpTestResult;
   let assignments = options.assignments ?? defaultAssignments();
   const slackConnection = options.slackConnection;
@@ -349,9 +349,11 @@ function runAdminPageHarness(
         };
       return Promise.resolve(jsonResponse({ resolution }));
     }
-    if (path === '/admin/api/mcp/test' && method === 'POST') {
+    const mcpTestMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/mcp\/test$/);
+    if (mcpTestMatch && method === 'POST') {
+      const agentId = decodeURIComponent(mcpTestMatch[1] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
-      mcpTestPosts.push(body);
+      mcpTestPosts.push({ agentId, ...body });
       const result =
         mcpTestResult ??
         {
@@ -364,12 +366,15 @@ function runAdminPageHarness(
       // The test endpoint always answers HTTP 200 — failures ride in the body.
       return Promise.resolve(jsonResponse(result));
     }
-    const mcpSecretsMatch = path.match(/^\/admin\/api\/mcp\/secrets\/([^/]+)$/);
+    const mcpSecretsMatch = path.match(
+      /^\/admin\/api\/agents\/([^/]+)\/mcp\/secrets\/([^/]+)$/,
+    );
     if (mcpSecretsMatch) {
-      const id = decodeURIComponent(mcpSecretsMatch[1] as string);
+      const agentId = decodeURIComponent(mcpSecretsMatch[1] as string);
+      const id = decodeURIComponent(mcpSecretsMatch[2] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       if (method === 'PUT') {
-        mcpSecretPuts.push({ id, body });
+        mcpSecretPuts.push({ agentId, id, body });
         const headerNames = (body.headerNames as string[]) ?? [];
         const headers: Record<string, string> = {};
         headerNames.forEach((name) => {
@@ -379,7 +384,7 @@ function runAdminPageHarness(
         return Promise.resolve(jsonResponse({ bearer: body.bearerToken !== undefined ? 'stored' : 'missing', headers }));
       }
       if (method === 'DELETE') {
-        mcpSecretDeletes.push({ id, body });
+        mcpSecretDeletes.push({ agentId, id, body });
         return Promise.resolve(jsonResponse({ ok: true }));
       }
     }
@@ -1166,6 +1171,7 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   await flushAsync();
   assert.equal(harness.mcpTestPosts.length, 1);
   const testBody = harness.mcpTestPosts[0] as Record<string, unknown>;
+  assert.equal(testBody.agentId, 'agent_conn');
   assert.equal(testBody.id, 'linear');
   assert.equal(testBody.url, 'https://mcp.example.com/mcp');
   assert.equal(testBody.authMode, 'bearer');
@@ -1207,8 +1213,43 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies[0]?.body), /sk-secret-token/);
   // But it WAS PUT to the settings store by reference.
   assert.equal(harness.mcpSecretPuts.length, 1);
+  assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_conn');
   assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
   assert.equal((harness.mcpSecretPuts[0]?.body as Record<string, unknown>).bearerToken, 'sk-secret-token');
+});
+
+test('creating a profile writes connection secrets under the generated profile id', async () => {
+  const harness = runAdminPageHarness();
+  await flushAsync();
+
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-name' }, 'Support Profile') });
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Help teammates.') });
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-new' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  change({
+    target: {
+      value: 'bearer',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'new-profile-token') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPostBodies[0]?.id, 'agent_support_profile');
+  assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_support_profile');
+  assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
+  assert.equal(harness.mcpSecretPuts[0]?.body.bearerToken, 'new-profile-token');
 });
 
 test('re-testing a connection refreshes discovered tools; a vanished tool drops and a new one defaults checked', async () => {
@@ -1408,6 +1449,7 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
   await flushAsync();
   assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
   assert.equal(harness.mcpSecretDeletes.length, 1);
+  assert.equal(harness.mcpSecretDeletes[0]?.agentId, 'agent_conn');
   assert.equal(harness.mcpSecretDeletes[0]?.id, 'linear');
   assert.deepEqual((harness.mcpSecretDeletes[0]?.body as Record<string, unknown>).headerNames, ['X-Api-Key']);
 });

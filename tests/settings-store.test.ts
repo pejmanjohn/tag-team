@@ -34,6 +34,23 @@ test('SqliteSettingsStore round-trips set, overwrite, and delete', async () => {
   }
 });
 
+test('mergeSettingStringSet preserves every member across concurrent callers', async () => {
+  const store = new SqliteSettingsStore(':memory:');
+  try {
+    await Promise.all([
+      store.mergeSettingStringSet('mcp-secret-inventory.agent', ['connection-a']),
+      store.mergeSettingStringSet('mcp-secret-inventory.agent', ['connection-b']),
+    ]);
+
+    assert.equal(
+      await store.getSetting('mcp-secret-inventory.agent'),
+      JSON.stringify(['connection-a', 'connection-b']),
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('SqliteSettingsStore persists across restart on a file database', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-settings-store-'));
   const path = join(dir, 'state.db');

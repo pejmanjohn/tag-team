@@ -6,10 +6,11 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  *
  * Bearer tokens and custom-header values are never stored in the profile row,
  * snapshots, or API responses. They live in the SettingsStore under
- * `mcp.<id>.bearer` / `mcp.<id>.header.<name>` and are resolved live at turn
- * time. An environment variable (`MCP_<ID>_BEARER` / `MCP_<ID>_HEADER_<NAME>`)
- * always wins over a stored value, exactly like provider API keys, so a
- * `wrangler secret put` / .env value takes precedence over a browser-saved one.
+ * `mcp.<agentId>.<connectionId>.bearer` /
+ * `mcp.<agentId>.<connectionId>.header.<name>` and are resolved live at turn
+ * time. The agent scope is required because connection ids are user-chosen,
+ * profile-local slugs. Environment variables use the same two-part scope and
+ * always win over stored values, exactly like provider API keys.
  *
  * No cache here: unlike provider keys, connection secrets are resolved
  * per-use (per test / per turn), so a stale cache would be a footgun.
@@ -29,33 +30,99 @@ export interface McpSecretSources {
   headers: Record<string, McpSecretSource>;
 }
 
-export function mcpBearerSettingKey(id: string): string {
-  return 'mcp.' + id + '.bearer';
+export interface McpSecretRef {
+  agentId: string;
+  connectionId: string;
 }
 
-export function mcpHeaderSettingKey(id: string, name: string): string {
-  return 'mcp.' + id + '.header.' + name;
+export function mcpBearerSettingKey(ref: McpSecretRef): string {
+  return 'mcp.' + ref.agentId + '.' + ref.connectionId + '.bearer';
 }
 
-export function mcpBearerEnvVar(id: string): string {
-  return 'MCP_' + mangle(id) + '_BEARER';
+export function mcpHeaderSettingKey(ref: McpSecretRef, name: string): string {
+  return 'mcp.' + ref.agentId + '.' + ref.connectionId + '.header.' + name;
 }
 
-export function mcpHeaderEnvVar(id: string, name: string): string {
-  return 'MCP_' + mangle(id) + '_HEADER_' + mangle(name);
+/**
+ * Durable inventory for profile deletion. Config rows and settings are separate
+ * operations, so the profile may be gone before all of its secret keys are
+ * cleared. Keeping the key list in settings makes cleanup idempotent and
+ * retryable even after the profile row (the original inventory) no longer
+ * exists. The marker contains key names only, never secret values.
+ */
+export function mcpSecretCleanupMarkerKey(agentId: string): string {
+  return 'mcp-secret-cleanup.' + agentId;
+}
+
+export async function stageMcpSecretCleanup(
+  agentId: string,
+  settingKeys: readonly string[],
+  store: SettingsStore,
+): Promise<void> {
+  const markerKey = mcpSecretCleanupMarkerKey(agentId);
+  const keys = validateCleanupKeys(agentId, settingKeys);
+  const merged = await store.mergeSettingStringSet(markerKey, keys);
+  validateCleanupKeys(agentId, merged);
+}
+
+/**
+ * Finish a previously staged cleanup. The marker is removed last, so a failure
+ * deleting any individual secret leaves the complete inventory available to a
+ * later DELETE retry. Returns false when no cleanup is pending.
+ */
+export async function finishMcpSecretCleanup(
+  agentId: string,
+  store: SettingsStore,
+): Promise<boolean> {
+  const markerKey = mcpSecretCleanupMarkerKey(agentId);
+  const raw = await store.getSetting(markerKey);
+  if (raw === undefined) return false;
+
+  const keys = parseCleanupKeys(agentId, raw);
+  for (const key of keys) {
+    await store.deleteSetting(key);
+  }
+  await store.deleteSetting(markerKey);
+  return true;
+}
+
+export function mcpBearerEnvVar(ref: McpSecretRef): string {
+  return (
+    'MCP_AGENT_' +
+    encodeEnvSegment(ref.agentId) +
+    '_CONNECTION_' +
+    encodeEnvSegment(ref.connectionId) +
+    '_BEARER'
+  );
+}
+
+export function mcpHeaderEnvVar(ref: McpSecretRef, name: string): string {
+  return (
+    'MCP_AGENT_' +
+    encodeEnvSegment(ref.agentId) +
+    '_CONNECTION_' +
+    encodeEnvSegment(ref.connectionId) +
+    '_HEADER_' +
+    encodeEnvSegment(name)
+  );
 }
 
 export async function resolveMcpSecrets(
-  id: string,
+  ref: McpSecretRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<ResolvedMcpSecrets> {
   const settings = store ?? getSettingsStore(env);
-  const bearer = await resolveOne(mcpBearerEnvVar(id), mcpBearerSettingKey(id), settings);
+  const [bearer, ...headerValues] = await Promise.all([
+    resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings),
+    ...headerNames.map((name) =>
+      resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings),
+    ),
+  ]);
   const headers: Record<string, string> = {};
-  for (const name of headerNames) {
-    const value = await resolveOne(mcpHeaderEnvVar(id, name), mcpHeaderSettingKey(id, name), settings);
+  for (const [index, name] of headerNames.entries()) {
+    const value = headerValues[index];
     if (value !== undefined) {
       headers[name] = value;
     }
@@ -64,47 +131,52 @@ export async function resolveMcpSecrets(
 }
 
 export async function describeMcpSecretSources(
-  id: string,
+  ref: McpSecretRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<McpSecretSources> {
   const settings = store ?? getSettingsStore(env);
-  const bearer = await sourceOf(mcpBearerEnvVar(id), mcpBearerSettingKey(id), settings);
+  const [bearer, ...headerSources] = await Promise.all([
+    sourceOf(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings),
+    ...headerNames.map((name) =>
+      sourceOf(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings),
+    ),
+  ]);
   const headers: Record<string, McpSecretSource> = {};
-  for (const name of headerNames) {
-    headers[name] = await sourceOf(mcpHeaderEnvVar(id, name), mcpHeaderSettingKey(id, name), settings);
+  for (const [index, name] of headerNames.entries()) {
+    headers[name] = headerSources[index]!;
   }
   return { bearer, headers };
 }
 
 export async function saveMcpSecrets(
-  id: string,
+  ref: McpSecretRef,
   input: { bearerToken?: string; headers?: Record<string, string> },
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
   if (input.bearerToken !== undefined) {
-    await settings.setSetting(mcpBearerSettingKey(id), input.bearerToken);
+    await settings.setSetting(mcpBearerSettingKey(ref), input.bearerToken);
   }
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     if (value !== undefined) {
-      await settings.setSetting(mcpHeaderSettingKey(id, name), value);
+      await settings.setSetting(mcpHeaderSettingKey(ref, name), value);
     }
   }
 }
 
 export async function deleteMcpSecrets(
-  id: string,
+  ref: McpSecretRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  await settings.deleteSetting(mcpBearerSettingKey(id));
+  await settings.deleteSetting(mcpBearerSettingKey(ref));
   for (const name of headerNames) {
-    await settings.deleteSetting(mcpHeaderSettingKey(id, name));
+    await settings.deleteSetting(mcpHeaderSettingKey(ref, name));
   }
 }
 
@@ -124,8 +196,40 @@ export function buildMcpRequestHeaders(
   return headers;
 }
 
-function mangle(value: string): string {
-  return value.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+/**
+ * Encode a validated id/header segment into a shell-safe, reversible spelling.
+ * Escaping every non-alphanumeric character by its ASCII code matters here:
+ * replacing both `-` and `_` with `_` would make two valid agent ids share one
+ * environment override even though their stored settings are isolated.
+ */
+function encodeEnvSegment(value: string): string {
+  return value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, (character) =>
+      '_' + character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'),
+    );
+}
+
+function validateCleanupKeys(agentId: string, settingKeys: readonly string[]): string[] {
+  const expectedPrefix = 'mcp.' + agentId + '.';
+  const keys = [...new Set(settingKeys)];
+  if (!keys.every((key) => key.startsWith(expectedPrefix))) {
+    throw new Error('Invalid MCP secret-cleanup key');
+  }
+  return keys;
+}
+
+function parseCleanupKeys(agentId: string, raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Invalid MCP secret-cleanup marker');
+  }
+  if (!Array.isArray(parsed) || !parsed.every((key) => typeof key === 'string')) {
+    throw new Error('Invalid MCP secret-cleanup marker');
+  }
+  return validateCleanupKeys(agentId, parsed);
 }
 
 async function resolveOne(

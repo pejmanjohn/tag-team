@@ -5,9 +5,10 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import flueApp from '../src/app.ts';
+import { mcpSecretCleanupMarkerKey } from '../src/config/mcp-secrets.ts';
 import type { McpConnectInput, McpDiscoveryResult } from '../src/config/mcp-test.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
-import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig, McpConnectionConfig } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -19,12 +20,12 @@ interface AdminHarnessOptions {
   discoverMcp?: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
 }
 
-function appWithAdmin(store: SqliteConfigStore, adminToken?: string): Hono {
+function appWithAdmin(store: ConfigStore, adminToken?: string): Hono {
   const overrides: AdminHarnessOptions = arguments.length >= 2 ? { adminToken } : {};
   return appWithAdminOptions(store, overrides);
 }
 
-function appWithAdminOptions(store: SqliteConfigStore, options: AdminHarnessOptions = {}): Hono {
+function appWithAdminOptions(store: ConfigStore, options: AdminHarnessOptions = {}): Hono {
   const app = new Hono();
   const token = Object.hasOwn(options, 'adminToken') ? options.adminToken : ADMIN_TOKEN;
   // A fresh in-memory settings store keeps the assignment-PUT Slack validation
@@ -868,7 +869,7 @@ test('admin API rejects mcpServers with a bad id, duplicate ids, oversize fields
   }
 });
 
-test('POST /admin/api/mcp/test returns discovered tools on success (HTTP 200)', async () => {
+test('POST /admin/api/agents/:agentId/mcp/test returns discovered tools on success (HTTP 200)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const calls: McpConnectInput[] = [];
@@ -879,7 +880,7 @@ test('POST /admin/api/mcp/test returns discovered tools on success (HTTP 200)', 
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -903,11 +904,11 @@ test('POST /admin/api/mcp/test returns discovered tools on success (HTTP 200)', 
   }
 });
 
-test('POST /admin/api/mcp/test overrides stored secrets with body-supplied values', async () => {
+test('profile-scoped MCP test overrides stored secrets with body-supplied values', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
-    await settings.setSetting('mcp.linear-mcp.bearer', 'stored-token');
+    await settings.setSetting('mcp.agent_test.linear-mcp.bearer', 'stored-token');
     const calls: McpConnectInput[] = [];
     const app = appWithAdminOptions(store, {
       settings,
@@ -917,7 +918,7 @@ test('POST /admin/api/mcp/test overrides stored secrets with body-supplied value
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -936,13 +937,13 @@ test('POST /admin/api/mcp/test overrides stored secrets with body-supplied value
   }
 });
 
-test('POST /admin/api/mcp/test backs an un-retyped header with its stored value via headerNames', async () => {
+test('profile-scoped MCP test backs an un-retyped header with its stored value via headerNames', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
     // Operator stored X-Api-Key earlier; on re-test they don't retype it, but
     // the client sends the header NAME so the server can resolve the stored value.
-    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'stored-key');
+    await settings.setSetting('mcp.agent_test.linear-mcp.header.X-Api-Key', 'stored-key');
     const calls: McpConnectInput[] = [];
     const app = appWithAdminOptions(store, {
       settings,
@@ -952,7 +953,7 @@ test('POST /admin/api/mcp/test backs an un-retyped header with its stored value 
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -971,7 +972,7 @@ test('POST /admin/api/mcp/test backs an un-retyped header with its stored value 
   }
 });
 
-test('POST /admin/api/mcp/test classifies a hung connection as timeout (HTTP 200, no raw error)', async () => {
+test('profile-scoped MCP test classifies a hung connection as timeout (HTTP 200, no raw error)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdminOptions(store, {
@@ -980,7 +981,7 @@ test('POST /admin/api/mcp/test classifies a hung connection as timeout (HTTP 200
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1002,7 +1003,7 @@ test('POST /admin/api/mcp/test classifies a hung connection as timeout (HTTP 200
   }
 });
 
-test('POST /admin/api/mcp/test classifies a 401 as unauthorized (HTTP 200)', async () => {
+test('profile-scoped MCP test classifies a 401 as unauthorized (HTTP 200)', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdminOptions(store, {
@@ -1011,7 +1012,7 @@ test('POST /admin/api/mcp/test classifies a 401 as unauthorized (HTTP 200)', asy
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1033,7 +1034,7 @@ test('POST /admin/api/mcp/test classifies a 401 as unauthorized (HTTP 200)', asy
   }
 });
 
-test('POST /admin/api/mcp/test returns ok:false blocked_url for a private target (HTTP 200) without calling discover', async () => {
+test('profile-scoped MCP test returns ok:false blocked_url without connecting to a private target', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     let discoverCalled = false;
@@ -1044,7 +1045,7 @@ test('POST /admin/api/mcp/test returns ok:false blocked_url for a private target
       },
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1067,14 +1068,14 @@ test('POST /admin/api/mcp/test returns ok:false blocked_url for a private target
   }
 });
 
-test('POST /admin/api/mcp/test returns 400 only for a schema-invalid body', async () => {
+test('profile-scoped MCP test returns 400 only for a schema-invalid body', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   try {
     const app = appWithAdminOptions(store, {
       discoverMcp: async () => ({ tools: [] }),
     });
 
-    const response = await app.request('/admin/api/mcp/test', {
+    const response = await app.request('/admin/api/agents/agent_test/mcp/test', {
       method: 'POST',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({ id: 'linear-mcp' }),
@@ -1087,13 +1088,19 @@ test('POST /admin/api/mcp/test returns 400 only for a schema-invalid body', asyn
   }
 });
 
-test('PUT /admin/api/mcp/secrets/:id stores values and reports sources without echoing them', async () => {
+test('PUT /admin/api/agents/:agentId/mcp/secrets/:connectionId stores scoped values', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
+    await store.createAgent(
+      agent({
+        id: 'agent_alpha',
+        mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
+      }),
+    );
     const app = appWithAdminOptions(store, { settings });
 
-    const response = await app.request('/admin/api/mcp/secrets/linear-mcp', {
+    const response = await app.request('/admin/api/agents/agent_alpha/mcp/secrets/linear-mcp', {
       method: 'PUT',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1114,23 +1121,209 @@ test('PUT /admin/api/mcp/secrets/:id stores values and reports sources without e
     assert.doesNotMatch(raw, /super-secret-token/);
     assert.doesNotMatch(raw, /header-secret-value/);
     // The values did land in the settings store by reference.
-    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), 'super-secret-token');
-    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), 'header-secret-value');
+    assert.equal(
+      await settings.getSetting('mcp.agent_alpha.linear-mcp.bearer'),
+      'super-secret-token',
+    );
+    assert.equal(
+      await settings.getSetting('mcp.agent_alpha.linear-mcp.header.X-Api-Key'),
+      'header-secret-value',
+    );
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey('agent_alpha')),
+      JSON.stringify([
+        'mcp.agent_alpha.linear-mcp.bearer',
+        'mcp.agent_alpha.linear-mcp.header.X-Api-Key',
+      ]),
+    );
   } finally {
     settings.close?.();
     store.close();
   }
 });
 
-test('DELETE /admin/api/mcp/secrets/:id clears the bearer and named header secrets', async () => {
+test('MCP secret PUT rejects missing scopes and header names outside the connection policy', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
-    await settings.setSetting('mcp.linear-mcp.bearer', 'tok');
-    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'val');
+    await store.createAgent(
+      agent({
+        id: 'agent_alpha',
+        mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
+      }),
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const headers = { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' };
+
+    const missingAgent = await app.request(
+      '/admin/api/agents/agent_missing/mcp/secrets/linear-mcp',
+      {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ bearerToken: 'orphan', headerNames: [] }),
+      },
+    );
+    const missingConnection = await app.request(
+      '/admin/api/agents/agent_alpha/mcp/secrets/missing-mcp',
+      {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ bearerToken: 'orphan', headerNames: [] }),
+      },
+    );
+    const untrackedHeader = await app.request(
+      '/admin/api/agents/agent_alpha/mcp/secrets/linear-mcp',
+      {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ headers: { 'X-Untracked': 'orphan' }, headerNames: [] }),
+      },
+    );
+
+    assert.equal(missingAgent.status, 404);
+    assert.equal(missingConnection.status, 404);
+    assert.equal(untrackedHeader.status, 400);
+    assert.equal(await settings.getSetting('mcp.agent_missing.linear-mcp.bearer'), undefined);
+    assert.equal(await settings.getSetting('mcp.agent_alpha.missing-mcp.bearer'), undefined);
+    assert.equal(
+      await settings.getSetting('mcp.agent_alpha.linear-mcp.header.X-Untracked'),
+      undefined,
+    );
+    assert.equal(await settings.getSetting(mcpSecretCleanupMarkerKey('agent_alpha')), undefined);
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('MCP secret PUT removes its writes when the profile disappears in flight', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let reads = 0;
+  const disappearingStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'getAgent') {
+        return async (agentId: string) => {
+          const current = await target.getAgent(agentId);
+          reads += 1;
+          if (reads === 1) {
+            await target.deleteAgent(agentId);
+          }
+          return current;
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as ConfigStore;
+
+  try {
+    await store.createAgent(
+      agent({
+        id: 'agent_disappearing',
+        mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
+      }),
+    );
+    const app = appWithAdminOptions(disappearingStore, { settings });
+
+    const response = await app.request(
+      '/admin/api/agents/agent_disappearing/mcp/secrets/linear-mcp',
+      {
+        method: 'PUT',
+        headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          bearerToken: 'late-token',
+          headers: { 'X-Api-Key': 'late-header' },
+          headerNames: ['X-Api-Key'],
+        }),
+      },
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(
+      await settings.getSetting('mcp.agent_disappearing.linear-mcp.bearer'),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting('mcp.agent_disappearing.linear-mcp.header.X-Api-Key'),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey('agent_disappearing')),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('parallel MCP secret PUTs retain cleanup inventory for every connection', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await store.createAgent(
+      agent({
+        id: 'agent_parallel',
+        mcpServers: [
+          mcpServer({ id: 'linear-mcp', headerNames: ['X-Linear-Key'] }),
+          mcpServer({ id: 'github-mcp', headerNames: ['X-GitHub-Key'] }),
+        ],
+      }),
+    );
+    const app = appWithAdminOptions(store, { settings });
+    const headers = { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' };
+
+    const [linear, github] = await Promise.all([
+      app.request('/admin/api/agents/agent_parallel/mcp/secrets/linear-mcp', {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          bearerToken: 'linear-token',
+          headers: { 'X-Linear-Key': 'linear-key' },
+          headerNames: ['X-Linear-Key'],
+        }),
+      }),
+      app.request('/admin/api/agents/agent_parallel/mcp/secrets/github-mcp', {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          bearerToken: 'github-token',
+          headers: { 'X-GitHub-Key': 'github-key' },
+          headerNames: ['X-GitHub-Key'],
+        }),
+      }),
+    ]);
+
+    assert.equal(linear.status, 200);
+    assert.equal(github.status, 200);
+    const marker = await settings.getSetting(mcpSecretCleanupMarkerKey('agent_parallel'));
+    assert.ok(marker);
+    assert.deepEqual(
+      new Set(JSON.parse(marker) as string[]),
+      new Set([
+        'mcp.agent_parallel.linear-mcp.bearer',
+        'mcp.agent_parallel.linear-mcp.header.X-Linear-Key',
+        'mcp.agent_parallel.github-mcp.bearer',
+        'mcp.agent_parallel.github-mcp.header.X-GitHub-Key',
+      ]),
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('DELETE /admin/api/agents/:agentId/mcp/secrets/:connectionId clears only scoped secrets', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting('mcp.agent_alpha.linear-mcp.bearer', 'tok');
+    await settings.setSetting('mcp.agent_alpha.linear-mcp.header.X-Api-Key', 'val');
+    await settings.setSetting('mcp.agent_beta.linear-mcp.bearer', 'beta-tok');
     const app = appWithAdminOptions(store, { settings });
 
-    const response = await app.request('/admin/api/mcp/secrets/linear-mcp', {
+    const response = await app.request('/admin/api/agents/agent_alpha/mcp/secrets/linear-mcp', {
       method: 'DELETE',
       headers: { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' },
       body: JSON.stringify({ headerNames: ['X-Api-Key'] }),
@@ -1138,15 +1331,54 @@ test('DELETE /admin/api/mcp/secrets/:id clears the bearer and named header secre
 
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
-    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), undefined);
-    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), undefined);
+    assert.equal(await settings.getSetting('mcp.agent_alpha.linear-mcp.bearer'), undefined);
+    assert.equal(
+      await settings.getSetting('mcp.agent_alpha.linear-mcp.header.X-Api-Key'),
+      undefined,
+    );
+    assert.equal(await settings.getSetting('mcp.agent_beta.linear-mcp.bearer'), 'beta-tok');
   } finally {
     settings.close?.();
     store.close();
   }
 });
 
-test('deleting an agent sweeps its mcp connection secrets from the settings store', async () => {
+test('profile-scoped MCP routes reject invalid agent and connection ids', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  try {
+    const app = appWithAdmin(store);
+    const headers = { ...auth(ADMIN_TOKEN), 'content-type': 'application/json' };
+    const secretBody = JSON.stringify({ headerNames: [] });
+    const testBody = JSON.stringify({
+      id: 'linear-mcp',
+      url: 'https://mcp.linear.app/mcp',
+      transport: 'streamable-http',
+      authMode: 'none',
+    });
+
+    const badAgentSecret = await app.request(
+      '/admin/api/agents/agent.bad/mcp/secrets/linear-mcp',
+      { method: 'PUT', headers, body: secretBody },
+    );
+    const badConnectionSecret = await app.request(
+      '/admin/api/agents/agent_good/mcp/secrets/Not_Valid',
+      { method: 'PUT', headers, body: secretBody },
+    );
+    const badAgentTest = await app.request('/admin/api/agents/agent.bad/mcp/test', {
+      method: 'POST',
+      headers,
+      body: testBody,
+    });
+
+    assert.equal(badAgentSecret.status, 400);
+    assert.equal(badConnectionSecret.status, 400);
+    assert.equal(badAgentTest.status, 400);
+  } finally {
+    store.close();
+  }
+});
+
+test('deleting an agent sweeps only that agent\'s mcp connection secrets', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -1157,8 +1389,9 @@ test('deleting an agent sweeps its mcp connection secrets from the settings stor
         mcpServers: [mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] })],
       }),
     );
-    await settings.setSetting('mcp.linear-mcp.bearer', 'tok');
-    await settings.setSetting('mcp.linear-mcp.header.X-Api-Key', 'val');
+    await settings.setSetting('mcp.agent_sweep.linear-mcp.bearer', 'tok');
+    await settings.setSetting('mcp.agent_sweep.linear-mcp.header.X-Api-Key', 'val');
+    await settings.setSetting('mcp.agent_survivor.linear-mcp.bearer', 'survivor-token');
 
     const response = await app.request('/admin/api/agents/agent_sweep', {
       method: 'DELETE',
@@ -1166,10 +1399,267 @@ test('deleting an agent sweeps its mcp connection secrets from the settings stor
     });
 
     assert.equal(response.status, 204);
-    assert.equal(await settings.getSetting('mcp.linear-mcp.bearer'), undefined);
-    assert.equal(await settings.getSetting('mcp.linear-mcp.header.X-Api-Key'), undefined);
+    assert.equal(await settings.getSetting('mcp.agent_sweep.linear-mcp.bearer'), undefined);
+    assert.equal(
+      await settings.getSetting('mcp.agent_sweep.linear-mcp.header.X-Api-Key'),
+      undefined,
+    );
+    assert.equal(
+      await settings.getSetting('mcp.agent_survivor.linear-mcp.bearer'),
+      'survivor-token',
+    );
   } finally {
     settings.close?.();
+    store.close();
+  }
+});
+
+test('agent deletion keeps a durable cleanup marker when secret deletion fails and can retry', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const persistedSettings = new SqliteSettingsStore(':memory:');
+  const bearerKey = 'mcp.agent_cleanup_retry.linear-mcp.bearer';
+  const headerKey = 'mcp.agent_cleanup_retry.linear-mcp.header.X-Api-Key';
+  const survivorKey = 'mcp.agent_survivor.linear-mcp.bearer';
+  let failSecretDeletion = true;
+  const settings: SettingsStore = {
+    getSetting: (key) => persistedSettings.getSetting(key),
+    setSetting: (key, value) => persistedSettings.setSetting(key, value),
+    mergeSettingStringSet: (key, values) =>
+      persistedSettings.mergeSettingStringSet(key, values),
+    deleteSetting: async (key) => {
+      if (failSecretDeletion && key === headerKey) {
+        throw new Error('settings deletion unavailable');
+      }
+      await persistedSettings.deleteSetting(key);
+    },
+  };
+
+  try {
+    const connection = mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] });
+    await store.createAgent(
+      agent({ id: 'agent_cleanup_retry', mcpServers: [connection] }),
+    );
+    await persistedSettings.setSetting(bearerKey, 'tok');
+    await persistedSettings.setSetting(headerKey, 'val');
+    await persistedSettings.setSetting(survivorKey, 'survivor-token');
+    const app = appWithAdminOptions(store, { settings });
+
+    const failed = await app.request('/admin/api/agents/agent_cleanup_retry', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(failed.status, 500);
+    assert.deepEqual(await failed.json(), { error: 'internal_error' });
+    assert.equal(
+      (await store.listAgents()).some(({ id }) => id === 'agent_cleanup_retry'),
+      false,
+    );
+    assert.equal(await persistedSettings.getSetting(bearerKey), undefined);
+    assert.equal(await persistedSettings.getSetting(headerKey), 'val');
+    assert.equal(
+      await persistedSettings.getSetting(mcpSecretCleanupMarkerKey('agent_cleanup_retry')),
+      JSON.stringify([bearerKey, headerKey]),
+    );
+    assert.equal(await persistedSettings.getSetting(survivorKey), 'survivor-token');
+
+    failSecretDeletion = false;
+    const retried = await app.request('/admin/api/agents/agent_cleanup_retry', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(retried.status, 204);
+    assert.equal(
+      (await store.listAgents()).some(({ id }) => id === 'agent_cleanup_retry'),
+      false,
+    );
+    assert.equal(await persistedSettings.getSetting(bearerKey), undefined);
+    assert.equal(await persistedSettings.getSetting(headerKey), undefined);
+    assert.equal(await persistedSettings.getSetting(survivorKey), 'survivor-token');
+    assert.equal(
+      await persistedSettings.getSetting(mcpSecretCleanupMarkerKey('agent_cleanup_retry')),
+      undefined,
+    );
+
+    const missing = await app.request('/admin/api/agents/agent_cleanup_retry', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { error: 'not_found' });
+  } finally {
+    persistedSettings.close();
+    store.close();
+  }
+});
+
+test('agent deletion leaves secrets untouched when the config delete fails before commit', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let failConfigDelete = true;
+  const flakyStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'deleteAgent') {
+        return async (agentId: string) => {
+          if (failConfigDelete) {
+            throw new Error('config deletion unavailable');
+          }
+          return target.deleteAgent(agentId);
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as ConfigStore;
+
+  try {
+    const connection = mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] });
+    await store.createAgent(agent({ id: 'agent_config_retry', mcpServers: [connection] }));
+    const bearerKey = 'mcp.agent_config_retry.linear-mcp.bearer';
+    const headerKey = 'mcp.agent_config_retry.linear-mcp.header.X-Api-Key';
+    await settings.setSetting(bearerKey, 'tok');
+    await settings.setSetting(headerKey, 'val');
+    const app = appWithAdminOptions(flakyStore, { settings });
+
+    const failed = await app.request('/admin/api/agents/agent_config_retry', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(failed.status, 500);
+    assert.deepEqual(await failed.json(), { error: 'internal_error' });
+    assert.deepEqual((await store.getAgent('agent_config_retry')).mcpServers, [connection]);
+    assert.equal(await settings.getSetting(bearerKey), 'tok');
+    assert.equal(await settings.getSetting(headerKey), 'val');
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey('agent_config_retry')),
+      JSON.stringify([bearerKey, headerKey]),
+    );
+
+    failConfigDelete = false;
+    const retried = await app.request('/admin/api/agents/agent_config_retry', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(retried.status, 204);
+    assert.equal(await settings.getSetting(bearerKey), undefined);
+    assert.equal(await settings.getSetting(headerKey), undefined);
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey('agent_config_retry')),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('agent deletion finishes cleanup after an ambiguous post-commit config error', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const ambiguousStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'deleteAgent') {
+        return async (agentId: string) => {
+          await target.deleteAgent(agentId);
+          throw new Error('durable object response lost after commit');
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as ConfigStore;
+
+  try {
+    const connection = mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] });
+    await store.createAgent(agent({ id: 'agent_ambiguous', mcpServers: [connection] }));
+    const bearerKey = 'mcp.agent_ambiguous.linear-mcp.bearer';
+    const headerKey = 'mcp.agent_ambiguous.linear-mcp.header.X-Api-Key';
+    await settings.setSetting(bearerKey, 'tok');
+    await settings.setSetting(headerKey, 'val');
+    const app = appWithAdminOptions(ambiguousStore, { settings });
+
+    const response = await app.request('/admin/api/agents/agent_ambiguous', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal(
+      (await store.listAgents()).some(({ id }) => id === 'agent_ambiguous'),
+      false,
+    );
+    assert.equal(await settings.getSetting(bearerKey), undefined);
+    assert.equal(await settings.getSetting(headerKey), undefined);
+    assert.equal(
+      await settings.getSetting(mcpSecretCleanupMarkerKey('agent_ambiguous')),
+      undefined,
+    );
+  } finally {
+    settings.close();
+    store.close();
+  }
+});
+
+test('an assignment race leaves the live agent credentials intact and can retry', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let injectAssignment = true;
+  const racingStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'deleteAgent') {
+        return async (agentId: string) => {
+          if (injectAssignment) {
+            injectAssignment = false;
+            await target.putAssignment({
+              workspaceId: 'T_RACE',
+              channelId: 'C_RACE',
+              agentId,
+              enabled: true,
+            });
+          }
+          return target.deleteAgent(agentId);
+        };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as ConfigStore;
+
+  try {
+    const connection = mcpServer({ id: 'linear-mcp', headerNames: ['X-Api-Key'] });
+    await store.createAgent(agent({ id: 'agent_race', mcpServers: [connection] }));
+    const bearerKey = 'mcp.agent_race.linear-mcp.bearer';
+    const headerKey = 'mcp.agent_race.linear-mcp.header.X-Api-Key';
+    await settings.setSetting(bearerKey, 'tok');
+    await settings.setSetting(headerKey, 'val');
+    const app = appWithAdminOptions(racingStore, { settings });
+
+    const raced = await app.request('/admin/api/agents/agent_race', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(raced.status, 409);
+    assert.deepEqual(await raced.json(), { error: 'agent_still_assigned' });
+    assert.deepEqual((await store.getAgent('agent_race')).mcpServers, [connection]);
+    assert.equal(await settings.getSetting(bearerKey), 'tok');
+    assert.equal(await settings.getSetting(headerKey), 'val');
+
+    await store.deleteAssignment('T_RACE', 'C_RACE');
+    const retried = await app.request('/admin/api/agents/agent_race', {
+      method: 'DELETE',
+      headers: auth(ADMIN_TOKEN),
+    });
+
+    assert.equal(retried.status, 204);
+    assert.equal(await settings.getSetting(bearerKey), undefined);
+    assert.equal(await settings.getSetting(headerKey), undefined);
+    assert.equal(await settings.getSetting(mcpSecretCleanupMarkerKey('agent_race')), undefined);
+  } finally {
+    settings.close();
     store.close();
   }
 });

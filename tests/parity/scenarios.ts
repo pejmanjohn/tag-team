@@ -8,6 +8,7 @@ import {
   channelThreadMessage,
   dmMessage,
   memberJoinedChannel,
+  privateChannelThreadMessage,
   topLevelChannelMessage,
 } from '../helpers/slack-fixtures.ts';
 import {
@@ -30,6 +31,7 @@ import type { CustomAgentConfig } from '../../src/config/types.ts';
 
 /** The exec channel / root thread the default fixtures target. */
 const EXEC_CHANNEL = 'C_EXEC';
+const PRIVATE_CHANNEL = 'G_PRIVATE';
 const ROOT_THREAD_TS = '1782770400.000100';
 const PARITY_MODEL = 'local-stub/parity-stub-1';
 
@@ -533,13 +535,11 @@ export const scenarios: Scenario[] = [
     async run(instance) {
       // Slack delivers BOTH an app_mention and a message event for a single
       // in-thread mention: same channel + message ts, different event_ids. A
-      // correct app replies exactly once. This is a Lane B guarantee: Flue
-      // claims msg:channel:messageTs (in addition to evt:event_id), so the
-      // companion event is deduped and only one final is delivered. The old
-      // event_id-only hand-rolled lane (deleted) dedupes on event_id alone, so
-      // it would have double-replied here — that's the origin of the dual-key
-      // claim design. No exception is registered for this scenario (the
-      // exceptions registry is empty; see exceptions.ts).
+      // correct app replies exactly once. The app claims
+      // msg:channel:messageTs in addition to evt:event_id, so the companion
+      // event is deduped and only one final is delivered. No exception is
+      // registered for this scenario (the exceptions registry is empty; see
+      // exceptions.ts).
       const fanoutTs = ROOT_THREAD_TS;
       const mention = appMention({
         event_id: 'Ev_FANOUT_MENTION',
@@ -1294,6 +1294,42 @@ export const scenarios: Scenario[] = [
       );
       await instance.quiesce();
       assert.equal(instance.backend.callsOfMethod('chat.postEphemeral').length, 1);
+    },
+  },
+  {
+    id: 'S39',
+    title: 'private-channel thread continuation is admitted as channel traffic',
+    config: {
+      configSeed: {
+        agents: pinAgentsForParity(seededAgents),
+        assignments: [
+          {
+            workspaceId: 'T_DEMO',
+            channelId: PRIVATE_CHANNEL,
+            agentId: 'agent_default',
+            enabled: true,
+            channelLabel: 'private-review',
+          },
+        ],
+      },
+    },
+    async run(instance) {
+      await instance.postEvent(
+        appMention({
+          event_id: 'Ev_S39_MENTION',
+          event: { channel: PRIVATE_CHANNEL },
+        }),
+      );
+      await instance.quiesce();
+
+      await instance.postEvent(privateChannelThreadMessage());
+      await instance.quiesce();
+
+      const finals = instance.backend.finals();
+      assert.equal(finals.length, 2);
+      assert.ok(finals.every((final) => final.channel === PRIVATE_CHANNEL));
+      assert.ok(finals.every((final) => final.threadTs === ROOT_THREAD_TS));
+      assert.equal(instance.backend.providerCalls().length, 2);
     },
   },
 ];

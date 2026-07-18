@@ -3,7 +3,6 @@ import { defineAgent, type AgentRouteHandler } from '@flue/runtime';
 import { resolveEffectiveSlackConfig } from '../config/effective-config.ts';
 import { resolveProfileMcpTools } from '../config/profile-mcp.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
-import { resolveAgentModel } from '../config/model-policy.ts';
 import { applyResolvedProviderKeys } from '../config/provider-keys.ts';
 import { surfaceForChannelId } from '../config/resolver.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
@@ -62,6 +61,7 @@ export default defineAgent(async ({ id }) => {
   // slow server is skipped, never aborting the turn — and drops any tool whose
   // name collides with a built-in or skill (a duplicate name kills the turn).
   const mcpTools = await resolveProfileMcpTools(config.agent.mcpServers, {
+    agentId: config.agent.id,
     env,
     existingToolNames: skills.map((s) => s.name),
   });

@@ -5,6 +5,7 @@ import type { McpServerConnection, McpServerOptions, ToolDefinition } from '@flu
 
 import { resolveProfileMcpTools } from '../src/config/profile-mcp.ts';
 import type { McpConnectionConfig } from '../src/config/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 // --- fixtures -------------------------------------------------------------
 
@@ -81,6 +82,7 @@ test('skips servers that are disabled, not ready, or have an empty allowlist', a
   ];
   const { fn, connected } = stubConnect({});
   const tools = await resolveProfileMcpTools(servers, {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -94,6 +96,7 @@ test('returns [] without throwing when servers is undefined (pre-migration froze
   // field undefined; the factory must never throw.
   const { fn, connected } = stubConnect({});
   const tools = await resolveProfileMcpTools(undefined as unknown as McpConnectionConfig[], {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -108,6 +111,7 @@ test('exposes only approved tools, keeping the mcp__<id>__ prefix on returned na
   const conn = fakeConnection([tool('mcp__srv__search'), tool('mcp__srv__create')]);
   const { fn } = stubConnect({ srv: conn });
   const tools = await resolveProfileMcpTools([server({ allowedTools: ['search'] })], {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -125,6 +129,7 @@ test('an approved tool no longer discovered is absent, not an error', async () =
   const conn = fakeConnection([tool('mcp__srv__search')]);
   const { fn } = stubConnect({ srv: conn });
   const tools = await resolveProfileMcpTools([server({ allowedTools: ['search', 'create'] })], {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -133,6 +138,37 @@ test('an approved tool no longer discovered is absent, not an error', async () =
     tools.map((t) => t.name),
     ['mcp__srv__search'],
   );
+});
+
+test('runtime resolution uses the agent-scoped environment override for the same connection id', async () => {
+  const seen: string[] = [];
+  const connect = async (_name: string, options: McpServerOptions): Promise<McpServerConnection> => {
+    seen.push(new Headers(options.headers).get('Authorization') ?? '');
+    return fakeConnection([tool('mcp__srv__search')]);
+  };
+
+  await withEnv(
+    {
+      MCP_AGENT_AGENT_5FALPHA_CONNECTION_SRV_BEARER: 'alpha-token',
+      MCP_AGENT_AGENT_5FBETA_CONNECTION_SRV_BEARER: 'beta-token',
+    },
+    async () => {
+      await resolveProfileMcpTools([server({ authMode: 'bearer', allowedTools: ['search'] })], {
+        agentId: 'agent_alpha',
+        env: noSecretsEnv,
+        existingToolNames: [],
+        connect,
+      });
+      await resolveProfileMcpTools([server({ authMode: 'bearer', allowedTools: ['search'] })], {
+        agentId: 'agent_beta',
+        env: noSecretsEnv,
+        existingToolNames: [],
+        connect,
+      });
+    },
+  );
+
+  assert.deepEqual(seen, ['Bearer alpha-token', 'Bearer beta-token']);
 });
 
 // --- (b) graceful degrade: one dead server never kills the others ---------
@@ -146,6 +182,7 @@ test('one server hanging past the connect deadline does not block the other', as
     server({ id: 'dead', discoveredTools: [{ name: 'x' }], allowedTools: ['x'] }),
   ];
   const tools = await resolveProfileMcpTools(servers, {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -169,6 +206,7 @@ test('a server that rejects on connect degrades gracefully (returns nothing, no 
     server({ id: 'bad', discoveredTools: [{ name: 'x' }], allowedTools: ['x'] }),
   ];
   const tools = await resolveProfileMcpTools(servers, {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -185,6 +223,7 @@ test('drops an MCP tool whose full name collides with an existing tool/skill nam
   const conn = fakeConnection([tool('mcp__srv__search'), tool('mcp__srv__create')]);
   const { fn } = stubConnect({ srv: conn });
   const tools = await resolveProfileMcpTools([server()], {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: ['mcp__srv__search'],
     connect: fn,
@@ -206,6 +245,7 @@ test('drops a later MCP tool that collides with an earlier server (first wins)',
     server({ id: 'b', discoveredTools: [{ name: 'go' }], allowedTools: ['go'] }),
   ];
   const tools = await resolveProfileMcpTools(servers, {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,
@@ -225,7 +265,7 @@ test('a server whose approved tools all vanished is closed immediately', async (
   const { fn } = stubConnect({ srv: conn });
   const tools = await resolveProfileMcpTools(
     [server({ discoveredTools: [{ name: 'gone' }], allowedTools: ['gone'] })],
-    { env: noSecretsEnv, existingToolNames: [], connect: fn },
+    { agentId: 'agent_test', env: noSecretsEnv, existingToolNames: [], connect: fn },
   );
   assert.deepEqual(tools, [], 'no approved tool survives the intersection');
   assert.equal(closed, true, 'the useless connection is closed immediately');
@@ -234,6 +274,7 @@ test('a server whose approved tools all vanished is closed immediately', async (
 test('returns [] for an empty server list without connecting', async () => {
   const { fn, connected } = stubConnect({});
   const tools = await resolveProfileMcpTools([], {
+    agentId: 'agent_test',
     env: noSecretsEnv,
     existingToolNames: [],
     connect: fn,

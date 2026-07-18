@@ -57,7 +57,11 @@ const forbiddenBinaryExtensions = new Set([
 const allowedBinaryFiles = new Map([
   [
     exportPath('assets', 'bot-avatar.png'),
-    '31b6bd258c2c9acc2fa7c1600789cbaaeb13c8dc39c33ca036e14c17f13ab822',
+    '3cee85ef83c9132393b57ef52ce73dcd3f2b1724a71f1fa8ef37dafd6f5ecdb4',
+  ],
+  [
+    exportPath('assets', 'admin-page.png'),
+    '68c94f054f6492300e77c62304f896735ef2fc3c81a37225c9539f179c073098',
   ],
 ]);
 
@@ -156,6 +160,55 @@ function scanExportTree() {
   }
 }
 
+function verifyNpmPackManifest() {
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    cwd: scratch,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    fail(`npm pack manifest failed:\n${result.stderr || result.stdout}`);
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(result.stdout);
+  } catch {
+    fail(`npm pack returned invalid JSON:\n${result.stdout}`);
+  }
+  const files = new Set((manifest[0]?.files ?? []).map((entry) => entry.path));
+  const required = [
+    '.dev.vars.example',
+    '.env.example',
+    'LICENSE',
+    'README.md',
+    'assets/admin-page.png',
+    'assets/bot-avatar.png',
+    'scripts/deploy-with-epilogue.mjs',
+    'slack-app-manifest.json',
+    'src/app.ts',
+    'wrangler.jsonc',
+  ];
+  const missing = required.filter((path) => !files.has(path));
+  const forbidden = [...files].filter(
+    (path) =>
+      path === '.worktreeinclude' ||
+      path.startsWith('.claude/') ||
+      path.startsWith('.github/') ||
+      path.startsWith('design/') ||
+      path.startsWith('docs/') ||
+      path.startsWith('tmp/'),
+  );
+  if (missing.length > 0 || forbidden.length > 0) {
+    fail(
+      [
+        'npm package manifest is not release-clean:',
+        ...missing.map((path) => `missing required file: ${path}`),
+        ...forbidden.map((path) => `forbidden packaged file: ${path}`),
+      ].join('\n'),
+    );
+  }
+}
+
 let passed = false;
 try {
   console.log(`SCRATCH=${scratch}`);
@@ -178,12 +231,13 @@ try {
   }
 
   scanExportTree();
+  verifyNpmPackManifest();
 
   run('npm', ['ci'], { cwd: scratch });
-  run('npm', ['test'], { cwd: scratch });
+  run('npm', ['run', 'test:ci'], { cwd: scratch });
   run('node', ['scripts/verify-flue-offline-turn.mjs'], { cwd: scratch });
-  run('node', ['scripts/verify-durability.mjs'], { cwd: scratch });
-  run('node', ['scripts/verify-providers.mjs'], { cwd: scratch });
+  run('npm', ['run', 'verify:durability'], { cwd: scratch });
+  run('npm', ['run', 'verify:providers'], { cwd: scratch });
 
   console.log('OSS export verification passed');
   passed = true;

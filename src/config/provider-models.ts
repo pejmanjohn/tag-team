@@ -60,6 +60,7 @@ export const PROVIDER_FAVORITES_SETTING_KEYS = {
 } as const;
 
 const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 8_000;
 const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 'codex-'];
 
 const modelCache = new Map<AdminProviderId, { expiresAt: number; models: ProviderModel[] }>();
@@ -76,15 +77,16 @@ export function isFavoriteProviderId(id: string): id is FavoriteProviderId {
 export async function validateProviderApiKey(
   id: ProviderKeyId,
   apiKey: string,
+  options: { timeoutMs?: number } = {},
 ): Promise<ProviderModel[]> {
   switch (id) {
     case 'anthropic':
-      return fetchAnthropicModels(apiKey, true);
+      return fetchAnthropicModels(apiKey, true, options.timeoutMs);
     case 'openai':
-      return fetchOpenAiModels(apiKey, true);
+      return fetchOpenAiModels(apiKey, true, options.timeoutMs);
     case 'openrouter':
-      await validateOpenRouterKey(apiKey);
-      return fetchOpenRouterModels();
+      await validateOpenRouterKey(apiKey, options.timeoutMs);
+      return fetchOpenRouterModels(options.timeoutMs);
   }
 }
 
@@ -94,6 +96,7 @@ export async function listProviderModels(
     env?: PlatformEnv;
     store?: SettingsStore;
     refresh?: boolean;
+    timeoutMs?: number;
   } = {},
 ): Promise<ProviderModelsResult> {
   if (!options.refresh) {
@@ -103,7 +106,7 @@ export async function listProviderModels(
     }
   }
 
-  const models = await fetchProviderModels(id, options.env, options.store);
+  const models = await fetchProviderModels(id, options.env, options.store, options.timeoutMs);
   primeProviderModelCache(id, models);
   return { models, cached: false };
 }
@@ -158,28 +161,39 @@ async function fetchProviderModels(
   id: AdminProviderId,
   env: PlatformEnv | undefined,
   store: SettingsStore | undefined,
+  timeoutMs: number | undefined,
 ): Promise<ProviderModel[]> {
   if (id === 'openrouter') {
-    return fetchOpenRouterModels();
+    return fetchOpenRouterModels(timeoutMs);
   }
   if (id === 'workers-ai') {
-    return fetchWorkersAiModels(env);
+    return fetchWorkersAiModels(env, timeoutMs);
   }
   const { apiKey } = await resolveProviderApiKey(id, env, store);
   if (!apiKey) {
     throw new ProviderModelsUnavailableError(id, 'provider_key_missing', 409);
   }
-  return id === 'anthropic' ? fetchAnthropicModels(apiKey, false) : fetchOpenAiModels(apiKey, false);
+  return id === 'anthropic'
+    ? fetchAnthropicModels(apiKey, false, timeoutMs)
+    : fetchOpenAiModels(apiKey, false, timeoutMs);
 }
 
-async function fetchAnthropicModels(apiKey: string, validating: boolean): Promise<ProviderModel[]> {
-  const response = await providerFetch('anthropic', `${anthropicApiBase()}/v1/models`, {
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+async function fetchAnthropicModels(
+  apiKey: string,
+  validating: boolean,
+  timeoutMs?: number,
+): Promise<ProviderModel[]> {
+  const { response, body } = await fetchProviderJson(
+    'anthropic',
+    `${anthropicApiBase()}/v1/models`,
+    {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
     },
-  });
-  const body = await readJson(response);
+    timeoutMs,
+  );
   if (!response.ok) {
     throw validating
       ? new ProviderKeyRejectedError('anthropic', response.status, providerErrorDetail(body, response))
@@ -192,11 +206,17 @@ async function fetchAnthropicModels(apiKey: string, validating: boolean): Promis
   });
 }
 
-async function fetchOpenAiModels(apiKey: string, validating: boolean): Promise<ProviderModel[]> {
-  const response = await providerFetch('openai', `${openAiApiBase()}/models`, {
-    headers: { authorization: `Bearer ${apiKey}` },
-  });
-  const body = await readJson(response);
+async function fetchOpenAiModels(
+  apiKey: string,
+  validating: boolean,
+  timeoutMs?: number,
+): Promise<ProviderModel[]> {
+  const { response, body } = await fetchProviderJson(
+    'openai',
+    `${openAiApiBase()}/models`,
+    { headers: { authorization: `Bearer ${apiKey}` } },
+    timeoutMs,
+  );
   if (!response.ok) {
     throw validating
       ? new ProviderKeyRejectedError('openai', response.status, providerErrorDetail(body, response))
@@ -207,19 +227,25 @@ async function fetchOpenAiModels(apiKey: string, validating: boolean): Promise<P
     .filter((model) => OPENAI_CHAT_MODEL_PREFIXES.some((prefix) => model.id.startsWith(prefix)));
 }
 
-async function validateOpenRouterKey(apiKey: string): Promise<void> {
-  const response = await providerFetch('openrouter', `${openRouterApiBase()}/auth/key`, {
-    headers: { authorization: `Bearer ${apiKey}` },
-  });
-  const body = await readJson(response);
+async function validateOpenRouterKey(apiKey: string, timeoutMs?: number): Promise<void> {
+  const { response, body } = await fetchProviderJson(
+    'openrouter',
+    `${openRouterApiBase()}/auth/key`,
+    { headers: { authorization: `Bearer ${apiKey}` } },
+    timeoutMs,
+  );
   if (!response.ok) {
     throw new ProviderKeyRejectedError('openrouter', response.status, providerErrorDetail(body, response));
   }
 }
 
-async function fetchOpenRouterModels(): Promise<ProviderModel[]> {
-  const response = await providerFetch('openrouter', `${openRouterApiBase()}/models`);
-  const body = await readJson(response);
+async function fetchOpenRouterModels(timeoutMs?: number): Promise<ProviderModel[]> {
+  const { response, body } = await fetchProviderJson(
+    'openrouter',
+    `${openRouterApiBase()}/models`,
+    undefined,
+    timeoutMs,
+  );
   if (!response.ok) {
     throw new ProviderModelsUnavailableError('openrouter', 'provider_models_failed', 502);
   }
@@ -234,10 +260,17 @@ async function fetchOpenRouterModels(): Promise<ProviderModel[]> {
   });
 }
 
-async function fetchWorkersAiModels(env: PlatformEnv | undefined): Promise<ProviderModel[]> {
+async function fetchWorkersAiModels(
+  env: PlatformEnv | undefined,
+  timeoutMs?: number,
+): Promise<ProviderModel[]> {
   const binding = aiBinding(env);
   if (binding) {
-    const models = await binding.models({ task: 'Text Generation' });
+    const models = await withProviderDeadline(
+      'workers-ai',
+      timeoutMs,
+      () => binding.models({ task: 'Text Generation' }),
+    );
     return models.map(workersAiProviderModel).filter((model) => model.id);
   }
 
@@ -249,29 +282,91 @@ async function fetchWorkersAiModels(env: PlatformEnv | undefined): Promise<Provi
 
   const url = new URL(`${cloudflareApiBase()}/accounts/${accountId}/ai/models/search`);
   url.searchParams.set('task', 'Text Generation');
-  const response = await providerFetch('workers-ai', url.href, {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  const body = await readJson(response);
+  const { response, body } = await fetchProviderJson(
+    'workers-ai',
+    url.href,
+    { headers: { authorization: `Bearer ${token}` } },
+    timeoutMs,
+  );
   if (!response.ok) {
     throw new ProviderModelsUnavailableError('workers-ai', 'provider_models_failed', 502);
   }
   return readModelArray(body).map(workersAiProviderModel).filter((model) => model.id);
 }
 
-async function providerFetch(
+async function fetchProviderJson(
   provider: AdminProviderId,
   url: string,
   init?: RequestInit,
-): Promise<Response> {
-  try {
-    return await fetch(url, init);
-  } catch (err) {
-    throw new ProviderUnreachableError(
-      provider,
-      err instanceof Error ? err.message : String(err),
-    );
+  timeoutMs?: number,
+): Promise<{ response: Response; body: unknown }> {
+  return withProviderDeadline(
+    provider,
+    timeoutMs,
+    async (signal) => {
+      let response: Response;
+      try {
+        response = await fetch(url, { ...init, signal });
+      } catch (err) {
+        if (signal.aborted) throw err;
+        throw new ProviderUnreachableError(provider, errorMessage(err));
+      }
+      return { response, body: await readJson(response) };
+    },
+    init?.signal ?? undefined,
+  );
+}
+
+async function withProviderDeadline<T>(
+  provider: AdminProviderId,
+  timeoutMs: number | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
+): Promise<T> {
+  const deadlineMs = timeoutMs ?? DEFAULT_PROVIDER_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  let rejectAbort: ((reason?: unknown) => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const rejectOnAbort = () => rejectAbort?.(controller.signal.reason);
+  controller.signal.addEventListener('abort', rejectOnAbort, { once: true });
+
+  const forwardAbort = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) {
+    forwardAbort();
+  } else {
+    callerSignal?.addEventListener('abort', forwardAbort, { once: true });
   }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, deadlineMs);
+  timer.unref?.();
+
+  try {
+    return await Promise.race([operation(controller.signal), aborted]);
+  } catch (err) {
+    if (timedOut) {
+      throw new ProviderUnreachableError(
+        provider,
+        `Provider ${provider} request timed out after ${deadlineMs}ms`,
+      );
+    }
+    if (controller.signal.aborted) {
+      throw new ProviderUnreachableError(provider, errorMessage(err));
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', forwardAbort);
+    controller.signal.removeEventListener('abort', rejectOnAbort);
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function anthropicApiBase(): string {

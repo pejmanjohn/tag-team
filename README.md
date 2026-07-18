@@ -2,7 +2,7 @@
 
 **Self-hosted, model-agnostic AI agent for Slack. One click to your own Cloudflare account — the first mention answers before you add a single model API key.**
 
-Chickpea answers `@`-mentions, thread replies, and DMs in your workspace, and every channel can get its own profile: separate instructions, model, and allowed tools, managed from a token-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
+Chickpea answers `@`-mentions, thread replies, and DMs in your workspace, and every channel can get its own profile: separate instructions, model, enabled skills, and approved tools from remote MCP connections, managed from a token-gated `/admin` page. It is built for teams that want an AI agent in Slack without routing messages, tokens, or model traffic through someone else's cloud: your Slack credentials live in your own Cloudflare Durable Object (or your own SQLite file), model calls go directly to the provider you pick, and this project hosts nothing. Built on [Flue](https://www.npmjs.com/package/@flue/runtime). MIT-licensed.
 
 ![The /admin page on a local install: a connected workspace, a channel with its attached profile, and per-channel instructions](assets/admin-page.png)
 
@@ -11,7 +11,7 @@ Chickpea answers `@`-mentions, thread replies, and DMs in your workspace, and ev
 - One deploy serves **one Slack workspace** — no multi-workspace OAuth distribution yet.
 - On Cloudflare's free tier, the Workers AI and Durable Object daily caps are **hard errors** under load; adding a provider key and pinning profiles away from Workers AI moves model spend.
 - `/admin` auth is a **bearer token**, not SSO.
-- **Updates are manual**: the Deploy button clones this repo (it does not fork), so upgrading is a re-deploy; append-only migrations carry state over.
+- **Updates are manual**: the Deploy button clones this repo (it does not fork), so upgrading is a re-deploy. The open-source v1 release starts from a clean, consolidated schema; migrations added after that public baseline are append-only.
 - **Durability is single-host** — multi-instance deployments would need a shared store first.
 
 ## Deploy to Cloudflare
@@ -51,10 +51,10 @@ The first mention answers with **zero model keys** on a fresh Cloudflare deploy:
 ### Operator controls (`/admin`)
 
 - A single self-contained admin page, gated by `TAG_ADMIN_TOKEN` — `Authorization: Bearer` or a one-time `?token=` login that sets an HttpOnly cookie and strips the token via redirect.
-- Reusable profiles: name, description, model, instructions, and an enable toggle. Disabling a profile stops it in every channel it is attached to.
+- Reusable profiles: name, model, instructions, enabled skills, remote MCP connections with per-tool approvals, and an enable toggle. Disabling a profile stops it in every channel it is attached to.
 - Per-channel assignments: add a channel by workspace + channel ID, enable/disable it, swap the attached profile, or detach it. Per-channel instructions append to the profile's instructions in that channel only.
 - Model pinning: a combobox showing concrete models grouped by the providers this install actually has configured. Any free-text `provider/model` specifier is accepted; unknown providers get a warning.
-- A read-only Access summary showing exactly what a new thread will use — profile, model, provider, allowed tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
+- A read-only Access summary showing exactly what a new thread will use — profile, model, provider, enabled skills, approved MCP connections and tools, the layered instruction stack, and a config snapshot hash — resolved by the same code path the Slack agent uses.
 - The first-run Slack connection wizard described above, with live `auth.test` validation and per-credential provenance (environment / stored / missing).
 - Every edit applies to new threads without a restart.
 
@@ -65,12 +65,14 @@ The first mention answers with **zero model keys** on a fresh Cloudflare deploy:
 - Every inbound event is signature-verified; a tampered signature gets a 401 and no side effects. The `url_verification` challenge is echoed before any credentials exist, so Slack's Retry works mid-setup.
 - If `TAG_ADMIN_TOKEN` is unset, every `/admin` route returns 404 — the admin plane is invisible, not merely locked.
 - Channel history is fetched per turn to build the prompt — the bot keeps no separate index of your workspace. What persists is scoped to threads it participates in: each thread's own agent transcript (the durability that lets a thread continue), dedupe claims, and config snapshots.
-- A thread freezes its resolved profile, model, tools, and instructions at its first durable turn. Admin edits apply to new threads only; in-flight conversations keep the config they started with, even across retries or a later profile edit. DMs deliberately track current config instead.
+- A thread freezes its resolved profile, model, instructions, skills, and MCP connection approvals at its first durable turn. Admin edits apply to new threads only; in-flight conversations keep the config they started with, even across retries or a later profile edit. DMs deliberately track current config instead.
 - Failures degrade loudly, never silently: a provider error, an unresolvable model, or a context-read failure each still deliver one sanitized final reply and clear the status line.
 
 ### Models
 
-- Three providers are wired in `src/app.ts`: `cloudflare-workers-ai` (keyless via the Workers AI binding on Cloudflare; REST with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` on Node), `anthropic` (`ANTHROPIC_API_KEY`), and an offline `local-stub` speaking the OpenAI-completions wire protocol.
+- Anthropic, OpenAI, and OpenRouter are built-in providers. Add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY` in Settings or as an environment secret to validate the key, populate that provider's model picker, and make it available to profiles.
+- Workers AI has two runtime paths: the `cloudflare` provider uses the keyless Workers AI binding on Cloudflare, while `cloudflare-workers-ai` uses the REST API with `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` on Node (or on Cloudflare when those separate REST credentials are supplied).
+- `local-stub` is an offline/dev-only OpenAI-completions-compatible provider registered when `LOCAL_STUB_URL` is set.
 - Each profile can pin its own model from `/admin`; the per-agent selection order is under Configuration below.
 - The Slack-visible identity stays one install-wide bot (`@Tag`) — the reply footer tells you which profile and model answered.
 
@@ -141,8 +143,12 @@ It calls `auth.test` and `users.info`, compares the display name to the manifest
 | `TAG_DB_PATH` | optional | SQLite path for the durable agent transcript. Default `./tmp/flue.db`; use `:memory:` for ephemeral runs. The default `tmp/**` path is ignored by `flue dev` watch mode. |
 | `SLACK_STATE_DB_PATH` | optional | SQLite path for app-owned state: runtime config, assignments, dedupe claims, joined-thread registry, per-thread config snapshots. Defaults to `<TAG_DB_PATH>.state`; a `:memory:` transcript DB implies a `:memory:` state store, so ephemeral runs stay fully ephemeral. |
 | `LOCAL_STUB_URL` / `LOCAL_STUB_API_KEY` | optional | Register the offline `local-stub` provider (OpenAI-completions wire; use `SLACK_TAG_MODEL=local-stub/<model>`). |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Credentials/base URL for the `anthropic` provider. |
-| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Credentials/base URL for the `cloudflare-workers-ai` provider on the Node target. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | optional | Enable the `anthropic` provider; `ANTHROPIC_BASE_URL` overrides its runtime inference endpoint. The key can instead be stored in Settings. |
+| `OPENAI_API_KEY` | optional | Enable the built-in `openai` provider. The key can instead be stored in Settings. |
+| `OPENROUTER_API_KEY` | optional | Enable the built-in `openrouter` provider. The key can instead be stored in Settings. |
+| `ANTHROPIC_API_URL` / `OPENAI_API_URL` / `OPENROUTER_API_URL` | optional | Override the vendor API roots used by `/admin` key validation and model discovery. These are catalog/validation endpoints, distinct from runtime inference overrides such as `ANTHROPIC_BASE_URL`. |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_WORKERS_AI_BASE_URL` | optional | Enable the REST `cloudflare-workers-ai` provider; the base URL controls runtime inference. Not required for the keyless `cloudflare` binding provider on Cloudflare. |
+| `CLOUDFLARE_API_URL` | optional | Override the Cloudflare API root used by `/admin` Workers AI model discovery. |
 
 `.env.example` lists the offline-safe defaults. `TAG_SELF_URL` is ignored — agent dispatch is in-process; the app logs a one-time warning if it is still set.
 
@@ -161,9 +167,10 @@ If neither exists, initialization fails with an error that tells the operator to
 - **The keyless model has no declared context window.** Non-catalog `cloudflare/*` models (including the default `@cf/zai-org/glm-5.2`) resolve through the binding without one, so threshold auto-compaction is disabled and long DM transcripts grow unbounded. Add a provider key and pin a catalog model, such as Claude or GPT, for bounded, auto-compacting context.
 - **Single workspace.** One deploy serves one workspace via a bot token. There is no multi-workspace OAuth distribution yet.
 - **`/admin` auth is a token.** A bearer token with a cookie session — no SSO. An optional Cloudflare Access layer is on the roadmap below.
-- **Updates are manual.** The Deploy button clones the repo (it does not fork), so there is no upstream-sync button. Durable Object migrations are append-only, so state survives a re-deploy of a newer version.
+- **The public v1 schema is a clean baseline.** Pre-open-source migration history was consolidated because there are no supported legacy upgrade targets; do not point v1 at a private/pre-release database expecting it to migrate. Migrations introduced after the public v1 baseline are append-only so supported public installs can carry state across later re-deploys.
 - **Durability is single-host.** Dedupe, runtime config, thread registry, and snapshots are restart-durable — on one Durable Object or one SQLite file. Multi-instance deployments would need a shared store first.
 - **No state backup/export on Cloudflare yet**, and the debug story is `wrangler tail`.
+- **Remote MCP URLs are trusted operator configuration in v1.** Connections can be created only through token-gated `/admin`; Chickpea requires HTTPS and rejects literal local/private addresses at save, test, and turn time. It does not resolve and pin DNS before connecting, so an operator-approved hostname could still rebind to an internal address on the Node lane. Do not expose connection authoring to untrusted users, and use MCP endpoints you trust. Cloudflare Workers cannot directly reach localhost or RFC1918 networks, which narrows this risk there; DNS pinning is required before connection presets or broader connection authoring ship.
 
 ## Where this is heading
 
@@ -172,10 +179,10 @@ Direction, not commitment — open an issue if one of these matters to you; that
 - **Optional Cloudflare Access for `/admin`.** In-worker verification of the `Cf-Access-Jwt-Assertion` JWT, skipping the token gate when configured. It has to be in-worker: a hostname-wide Access policy would block Slack's event webhooks.
 - **A guided `npx chickpea deploy`.** The same artifact the button ships, driven from the terminal.
 - **Multi-workspace Slack OAuth distribution**, so one deploy can serve several workspaces with per-workspace tokens.
-- **Connection presets.** Profiles gain capability through skills and remote MCP connections; a curated gallery of known-good servers (web search, docs) that pre-fills everything but the credential is the natural next step.
-- **More providers in the `/admin` model picker** — OpenAI, OpenRouter, and OpenAI-compatible endpoints such as Ollama and gateways. This is provider registration, not new plumbing.
+- **Connection presets.** Profiles gain capability through skills and remote MCP connections; after DNS pinning lands, a curated gallery of known-good servers (web search, docs) that pre-fills everything but the credential is the natural next step.
+- **More OpenAI-compatible endpoints in the `/admin` model picker**, such as Ollama and self-hosted gateways. Anthropic, OpenAI, OpenRouter, and both Workers AI paths are already supported.
 - **Usage visibility in `/admin`**: Workers AI Neuron and Durable Object write budgets, surfaced before the free-tier caps turn into errors.
-- **State export/backup and a documented upgrade path** — release tags plus a template-sync flow, backed by the append-only migration guarantee.
+- **State export/backup and a documented post-v1 upgrade path** — release tags plus a template-sync flow, backed by append-only public migrations.
 - **Opt-in scheduled posts** (digests, standup summaries) via cron triggers — strictly opt-in per channel, so the no-passive-monitoring promise holds.
 
 ## Tests and verification
@@ -188,19 +195,21 @@ The behavior described above is a tested contract, not a description.
 FLUE_NODE_BIN=/path/to/node npm test
 ```
 
-The suite covers 36 parity scenarios — signature checks, dedupe, streaming fallbacks, fail-closed admission, thread snapshots — plus admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
+The parity suite covers signature checks, dedupe, streaming fallbacks, fail-closed admission, and thread snapshots, alongside admin/config-store checks, identity checks, fake-Slack smoke tests, Slack formatting, the model resolver, and turn-normalization/history-window units. Set `TAG_REQUIRE_LOOPBACK=1` (what `npm run test:ci` does) so a loopback-denied environment fails instead of silently skipping the parity run.
 
 Offline, net-guarded evidence scripts (run with Node >= 22.19 on `PATH`) spawn the real app against a fake Slack/provider backend and assert zero external network traffic (`scripts/net-guard.mjs`):
 
 ```bash
 node scripts/verify-flue-offline-turn.mjs
 node scripts/verify-agent-config.mjs
-node scripts/verify-durability.mjs
-node scripts/verify-providers.mjs
+npm run verify:durability
+npm run verify:providers
 npm run verify:cf-smoke
 ```
 
 `verify:cf-smoke` builds the Cloudflare bundle and boots it under real workerd (`wrangler dev`), driving the full first-run story with no Slack credentials: seeding from the Durable Object store, fail-closed 401s before the wizard, wizard validation and persistence, a signed mention delivering a final, dedupe on redelivery, state surviving a workerd restart, and tampered-signature rejection — with every outbound URL pointed at loopback.
+
+`npm run verify:providers:live` is an explicit, credential-gated companion for maintainers. It runs each configured Anthropic, OpenAI, OpenRouter, or Workers AI lane against the real provider while Slack remains on the loopback fake and the network guard blocks every unapproved host. It prints pass/fail evidence to stdout and does not write model replies or internal provenance artifacts into the repository.
 
 ## Contributing
 

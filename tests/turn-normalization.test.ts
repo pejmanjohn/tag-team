@@ -9,6 +9,7 @@ import {
   appMention as fixture,
   channelThreadMessage,
   dmMessage,
+  privateChannelThreadMessage,
   topLevelChannelMessage,
 } from './helpers/slack-fixtures.ts';
 
@@ -25,6 +26,24 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
   assert.equal(threadReply.turn.source, 'implicit_thread_reply');
   assert.equal(threadReply.turn.contextMode, 'thread');
   assert.equal(slackThreadKey(threadReply.turn), 'T_DEMO:C_EXEC:1782770400.000100');
+
+  const privateChannelThreadReply = normalizeSlackTurn(privateChannelThreadMessage(), options);
+  assert.ok(privateChannelThreadReply.status === 'runnable');
+  assert.equal(privateChannelThreadReply.turn.source, 'implicit_thread_reply');
+  assert.equal(privateChannelThreadReply.turn.channelType, 'group');
+  assert.equal(privateChannelThreadReply.turn.contextMode, 'thread');
+  assert.equal(
+    slackThreadKey(privateChannelThreadReply.turn),
+    'T_DEMO:G_PRIVATE:1782770400.000100',
+  );
+
+  const privateChannelTopLevel = privateChannelThreadMessage({
+    event_id: 'Ev_MSG_PRIVATE_TOP_LEVEL',
+  });
+  delete privateChannelTopLevel.event.thread_ts;
+  const ignoredPrivateChannelTopLevel = normalizeSlackTurn(privateChannelTopLevel, options);
+  assert.ok(ignoredPrivateChannelTopLevel.status === 'ignored');
+  assert.equal(ignoredPrivateChannelTopLevel.reason, 'top_level_channel_message');
 
   const dm = normalizeSlackTurn(dmMessage(), options);
   assert.ok(dm.status === 'runnable');
@@ -52,6 +71,14 @@ test('Slack turn normalization classifies mentions, thread replies, DMs, and ign
   const unsupportedChannelType = normalizeSlackTurn(missingChannelType, options);
   assert.ok(unsupportedChannelType.status === 'ignored');
   assert.equal(unsupportedChannelType.reason, 'unsupported_channel_type');
+
+  const groupDm = channelThreadMessage({
+    event_id: 'Ev_MSG_GROUP_DM',
+    event: { channel: 'G_GROUP_DM', channel_type: 'mpim' },
+  });
+  const unsupportedGroupDm = normalizeSlackTurn(groupDm, options);
+  assert.ok(unsupportedGroupDm.status === 'ignored');
+  assert.equal(unsupportedGroupDm.reason, 'unsupported_channel_type');
 });
 
 test('natural-language channel history windows do not match adjacent words', () => {

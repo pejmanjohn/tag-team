@@ -1,7 +1,6 @@
 import { AgentExistsError, AgentStillAssignedError, UnknownAgentError } from './errors.ts';
 import type { AssignmentLookupOptions } from './resolver.ts';
-import { SEED_CLOUDFLARE_MODEL_PIN, seededAgents, seededAssignments } from './seed.ts';
-import { isCloudflareTarget } from './runtime-target.ts';
+import { seededAgents, seededAssignments } from './seed.ts';
 import type { ChannelAssignment, CustomAgentConfig } from './types.ts';
 import { openStateDb, resolveStateDbPath, type NodeStateDb } from '../state/node-state-db.ts';
 import type { StateDb } from '../state/state-db.ts';
@@ -26,12 +25,8 @@ interface AgentRow {
   enabled: number;
   model: string | null;
   default_models_json: string;
-  // Nullable in the row type because pre-skills DBs may briefly surface the
-  // column as NULL before/around migration; rowToAgent coerces to [].
-  skills_json: string | null;
-  // Same treatment as skills_json: pre-v4 DBs surface NULL before/around the
-  // migration; rowToAgent coerces to [].
-  mcp_servers_json: string | null;
+  skills_json: string;
+  mcp_servers_json: string;
 }
 
 interface AssignmentRow {
@@ -92,29 +87,6 @@ export class ConfigStoreLogic {
       `CREATE TABLE IF NOT EXISTS config_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      )`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS config_agents (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        instructions TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        model TEXT,
-        default_models_json TEXT NOT NULL,
-        skills_json TEXT NOT NULL DEFAULT '[]',
-        mcp_servers_json TEXT NOT NULL DEFAULT '[]'
-      )`,
-    );
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS config_assignments (
-        workspace_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        channel_label TEXT,
-        channel_prompt_addendum TEXT,
-        PRIMARY KEY (workspace_id, channel_id)
       )`,
     );
     this.runMigrations();
@@ -322,96 +294,40 @@ export class ConfigStoreLogic {
     );
   }
 
-  // Ordered, idempotent migrations for state DBs created before the current
-  // CREATE TABLE schema. The applied version persists in config_meta so future
-  // columns append a numbered step here instead of growing bespoke
-  // ensure-column methods.
+  // Public schema history starts at v1. This baseline deliberately contains
+  // the complete current schema: the pre-open-source private migration chain
+  // has no supported upgrade target. Keep v1 frozen; future public schema
+  // changes append a new numbered step.
   private runMigrations(): void {
     const MIGRATIONS: Array<{ version: number; up: (db: StateDb) => void }> = [
       {
         version: 1,
         up: (db) => {
-          const columns = db.all('PRAGMA table_info(config_assignments)') as Array<{
-            name: string;
-          }>;
-          if (!columns.some((column) => column.name === 'channel_label')) {
-            db.exec('ALTER TABLE config_assignments ADD COLUMN channel_label TEXT');
-          }
-        },
-      },
-      {
-        version: 2,
-        up: (db) => {
-          if (!isCloudflareTarget()) {
-            return;
-          }
-          db.run(
-            `UPDATE config_agents
-             SET model = ?
-             WHERE id = ? AND model IS NULL`,
-            SEED_CLOUDFLARE_MODEL_PIN,
-            'agent_default',
+          // One statement per exec: Durable Object SQLite rejects
+          // multi-statement strings.
+          db.exec(
+            `CREATE TABLE IF NOT EXISTS config_agents (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              instructions TEXT NOT NULL,
+              enabled INTEGER NOT NULL,
+              model TEXT,
+              default_models_json TEXT NOT NULL,
+              skills_json TEXT NOT NULL DEFAULT '[]',
+              mcp_servers_json TEXT NOT NULL DEFAULT '[]'
+            )`,
           );
-        },
-      },
-      {
-        version: 3,
-        up: (db) => {
-          // Add the per-profile skills column to DBs created before it existed.
-          // NOT NULL needs a DEFAULT so existing rows backfill to an empty list.
-          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
-          if (!columns.some((column) => column.name === 'skills_json')) {
-            db.exec("ALTER TABLE config_agents ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]'");
-          }
-        },
-      },
-      {
-        version: 4,
-        up: (db) => {
-          // Add the per-profile MCP connections column to DBs created before it
-          // existed. Same shape as v3: NOT NULL with a DEFAULT so existing rows
-          // backfill to an empty list.
-          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
-          if (!columns.some((column) => column.name === 'mcp_servers_json')) {
-            db.exec(
-              "ALTER TABLE config_agents ADD COLUMN mcp_servers_json TEXT NOT NULL DEFAULT '[]'",
-            );
-          }
-        },
-      },
-      {
-        version: 5,
-        up: (db) => {
-          // The per-profile allowed-tools axis was removed (capability comes
-          // from Skills and Connections; built-ins are wired unconditionally).
-          // Drop the column so old DBs match the current CREATE TABLE — it was
-          // NOT NULL without a DEFAULT, so merely not writing it would break
-          // inserts on pre-v5 DBs. DROP COLUMN needs SQLite ≥3.35; both
-          // node:sqlite (Node 22+) and DO SQLite are well past that.
-          //
-          // CAUTION: this is the chain's first destructive step. Rolling back
-          // to a pre-v5 build against a v5 DB breaks profile writes (old code
-          // still sets allowed_tools_json); recover by re-adding the column:
-          //   ALTER TABLE config_agents
-          //     ADD COLUMN allowed_tools_json TEXT NOT NULL DEFAULT '[]'
-          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
-          if (columns.some((column) => column.name === 'allowed_tools_json')) {
-            db.exec('ALTER TABLE config_agents DROP COLUMN allowed_tools_json');
-          }
-        },
-      },
-      {
-        version: 6,
-        up: (db) => {
-          // The per-profile description field was removed with the editor
-          // cleanup — a profile is identified by its name alone. Destructive
-          // like v5, with the same rollback recovery shape:
-          //   ALTER TABLE config_agents
-          //     ADD COLUMN description TEXT NOT NULL DEFAULT ''
-          const columns = db.all('PRAGMA table_info(config_agents)') as Array<{ name: string }>;
-          if (columns.some((column) => column.name === 'description')) {
-            db.exec('ALTER TABLE config_agents DROP COLUMN description');
-          }
+          db.exec(
+            `CREATE TABLE IF NOT EXISTS config_assignments (
+              workspace_id TEXT NOT NULL,
+              channel_id TEXT NOT NULL,
+              agent_id TEXT NOT NULL,
+              enabled INTEGER NOT NULL,
+              channel_label TEXT,
+              channel_prompt_addendum TEXT,
+              PRIMARY KEY (workspace_id, channel_id)
+            )`,
+          );
         },
       },
     ];
@@ -523,14 +439,8 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     enabled: Boolean(row.enabled),
     ...(row.model ? { model: row.model } : {}),
     defaultModels: JSON.parse(row.default_models_json) as CustomAgentConfig['defaultModels'],
-    // Coerce a NULL/absent column (pre-migration read) to an empty list.
-    skills: row.skills_json
-      ? (JSON.parse(row.skills_json) as CustomAgentConfig['skills'])
-      : [],
-    // Same coercion for the pre-v4 connections column.
-    mcpServers: row.mcp_servers_json
-      ? (JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'])
-      : [],
+    skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
+    mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
   };
 }
 

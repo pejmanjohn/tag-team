@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 /**
- * Stage-4 gate (a): restart durability via file-backed `src/db.ts`.
+ * Restart-durability verification via file-backed `src/db.ts`.
  *
- * Proves the Flue lane's headline gain over the hand-rolled lane: conversation
- * state survives a process restart. The hand-rolled lane keeps thread state in
- * a process-local Map, so a redelivery after a crash forgets the thread. The
- * Flue lane persists the agent transcript to SQLite (db.ts), so a second turn
- * in the same thread — served by a BRAND NEW process on the same DB file —
- * replays the first turn's assistant reply from durable storage.
+ * Proves conversation state survives a process restart. The app persists the
+ * agent transcript to SQLite (db.ts), so a second turn in the same thread —
+ * served by a BRAND NEW process on the same DB file — replays the first turn's
+ * assistant reply from durable storage.
  *
  * Flow (all offline, net-guarded, stub provider):
  *   1. server1 on DB_A: T1 signed mention, stub replyText = DURABILITY_MARKER.
@@ -15,7 +13,7 @@
  *   2. server2 on DB_A (fresh process, same DB): T2 signed mention in the SAME
  *      thread. Assert (i) T2 delivers a final on the wire; (ii) T2's provider
  *      request replays the marker (T1's assistant reply, loaded from the DB);
- *      (iii) GET .../{thread}?view=history returns BOTH turns. Save artifacts.
+ *      (iii) GET .../{thread}?view=history returns BOTH turns.
  *   3. NEGATIVE CONTROL — server3 on a DIFFERENT fresh DB_B: the same follow-up
  *      turn's provider request must NOT contain the marker (no shared durable
  *      storage → no replay). This proves the assertion measures durability.
@@ -26,11 +24,15 @@
  *      (iii) an implicit (mention-free) thread reply IS admitted and answered —
  *      the joined thread survived the restart. Negative control on DB_B: the
  *      same implicit reply produces nothing (thread never started there).
+ *   5. Run the focused snapshot helper: edit profile config after a thread's
+ *      first turn, restart, and prove that thread keeps its frozen config while
+ *      future threads see the edit.
  *
  * Run with Node >= 22.19:
  *   node scripts/verify-durability.mjs
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,7 +46,6 @@ import {
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   spawnServer,
-  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
@@ -56,9 +57,7 @@ const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782770400.000100';
 const THREAD_KEY = `T_DEMO:${EXEC_CHANNEL}:${ROOT_TS}`;
 
-const logLines = [];
 function log(line) {
-  logLines.push(line);
   console.log(line);
 }
 
@@ -152,7 +151,6 @@ const dbB = join(mkdtempSync(join(tmpdir(), 'flue-dur-dbB-')), 'flue.db');
 // its thread key, which would legitimately register the thread there).
 const dbC = join(mkdtempSync(join(tmpdir(), 'flue-dur-dbC-')), 'flue.db');
 
-let historyTranscript;
 try {
   const serverEntry = await buildNodeServer();
   log(`built node server: ${serverEntry}`);
@@ -203,7 +201,7 @@ try {
     const historyResponse = await fetch(historyUrl, {
       headers: { 'x-flue-internal-token': INTERNAL_TOKEN },
     });
-    historyTranscript = await historyResponse.text();
+    const historyTranscript = await historyResponse.text();
     const markerCount = (historyTranscript.match(new RegExp(DURABILITY_MARKER, 'g')) || []).length;
 
     await stopChild(child);
@@ -322,18 +320,24 @@ try {
   await backend.close();
 }
 
-// Persist artifacts (contain no secrets — offline stub run).
-if (historyTranscript !== undefined) {
-  try {
-    writeFileSync(
-      stage4ArtifactPath('durability-transcript.json'),
-      `${JSON.stringify(JSON.parse(historyTranscript), null, 2)}\n`,
-    );
-  } catch {
-    writeFileSync(stage4ArtifactPath('durability-transcript.json'), historyTranscript);
-  }
-}
+log('\nRunning snapshot-freeze restart verification...');
+const snapshotRun = spawnSync(
+  process.execPath,
+  [join(REPO_ROOT, 'scripts', 'verify-snapshot-durability.mjs')],
+  {
+    cwd: REPO_ROOT,
+    env: process.env,
+    stdio: 'inherit',
+  },
+);
+record(
+  'SNAPSHOT DURABILITY: frozen thread config survives a process restart',
+  snapshotRun.status === 0,
+  snapshotRun.error
+    ? snapshotRun.error.message
+    : `exit=${snapshotRun.status ?? 'signal'}${snapshotRun.signal ? ` signal=${snapshotRun.signal}` : ''}`,
+);
+
 const failed = results.filter((result) => !result.passed);
 log(`\n${results.length - failed.length}/${results.length} checks passed`);
-writeFileSync(stage4ArtifactPath('durability-run.log'), `${logLines.join('\n')}\n`);
 process.exit(failed.length === 0 ? 0 : 1);

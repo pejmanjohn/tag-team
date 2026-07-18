@@ -7,6 +7,24 @@
     "type": "git",
     "url": "git+https://github.com/pejmanjohn/chickpea.git"
   },
+  "files": [
+    ".dev.vars.example",
+    ".env.example",
+    ".nvmrc",
+    "LICENSE",
+    "README.md",
+    "SETUP_AGENT.md",
+    "assets",
+    "fixtures",
+    "scripts",
+    "src",
+    "tests",
+    "types",
+    "flue.config.ts",
+    "slack-app-manifest.json",
+    "tsconfig.json",
+    "wrangler.jsonc"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -22,6 +40,9 @@
     "deploy": "node scripts/deploy-with-epilogue.mjs",
     "verify:cf-smoke": "node scripts/verify-cf-smoke.mjs",
     "verify:admin-ui": "node scripts/verify-admin-ui.mjs",
+    "verify:durability": "node scripts/verify-durability.mjs",
+    "verify:providers": "node scripts/verify-providers.mjs",
+    "verify:providers:live": "node scripts/verify-providers-live.mjs",
     "prepublishOnly": "node scripts/guard-fresh-export-publish.mjs",
     "verify:oss-export": "node scripts/verify-oss-export.mjs",
     "slack:bridge": "node scripts/slack-socket-bridge.mjs",
@@ -42,6 +63,11 @@
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
     "wrangler": "4.103.0"
+  },
+  "overrides": {
+    "@flue/slack": {
+      "hono": "^4.12.27"
+    }
   },
   "cloudflare": {
     "label": "Chickpea",

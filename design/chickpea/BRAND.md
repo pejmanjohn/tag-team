@@ -1,18 +1,18 @@
 # Chickpea — brand & UI guidelines
 
-Playful rebrand of the Tag Team `/admin` UI. One friendly chickpea speaks for a
-team of many agents. Warm hummus creams, chickpea gold, sprout green, chunky
-rounded "clay" surfaces, and buttons that physically press.
-
-Reference mockups: `Chickpea Rebrand.dc.html` in this project — settings (5a),
-wizard (7a), profile edit (7b), states (7c), logo (6c).
+Living visual guidance for the Chickpea `/admin` UI. One friendly chickpea
+speaks for a team of many agents. Warm hummus creams, chickpea gold, sprout
+green, chunky rounded "clay" surfaces, and buttons that physically press. The
+shipped admin page and canonical assets are the implementation reference; this
+guide records the design rules that should remain consistent as the UI evolves.
 
 ## Name & logo
 
-- Product name: **Chickpea** (capitalized in UI copy; replies post as **@Chickpea**).
+- Product name: **Chickpea** (capitalized in UI copy); the install-wide Slack bot
+  display name is **@Tag**.
 - Mark: single smiling chickpea — gold pea, highlight top-left, two dot eyes,
-  smile, faint blush. Source: `chickpea-mark.svg`. In the app it ships as a CSS
-  `background-image` on `.avatar` (no markup change).
+  smile, faint blush. Canonical source: [`assets/chickpea-mark.svg`](../../assets/chickpea-mark.svg).
+  In the app it ships as a CSS `background-image` on `.avatar`.
 - Never add the sprout leaf back; never put faces on more than one pea in a
   lockup. Secondary peas (marketing/illustration) are faceless.
 - Minimum sizes: mark alone ≥ 14px; with face ≥ 20px.
@@ -46,8 +46,8 @@ light pea `#F0C566`, blush `#DC8A4F @ 40%`.
   provider names, step numbers, modal titles)
 - UI / body: **Quicksand** — 500 body, 600 emphasis, 700 labels & buttons
 - Code / models / IDs: **JetBrains Mono** 400–500
-- Load: Google Fonts (`Baloo 2`, `Quicksand`, `JetBrains Mono`) — the theme CSS
-  `@import`s them.
+- Load: Google Fonts (`Baloo 2`, `Quicksand`, `JetBrains Mono`) — the live admin
+  stylesheet `@import`s them.
 
 ## Shape & depth
 

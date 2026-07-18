@@ -264,6 +264,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     });
   }
 
+  async settingMergeStringSet(
+    key: string,
+    values: readonly string[],
+  ): Promise<StateRpcResult<string[]>> {
+    return this.call((stores) => stores.settings.mergeSettingStringSet(key, values));
+  }
+
   // ── turn relay (Cloudflare turn-horizon fix) ─────────────────────────────
 
   async enqueueTurn(job: TurnJob): Promise<StateRpcResult<null>> {
@@ -440,6 +447,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
       getSetting: async (key) => stores.settings.getSetting(key),
       setSetting: async (key, value) => stores.settings.setSetting(key, value),
       deleteSetting: async (key) => stores.settings.deleteSetting(key),
+      mergeSettingStringSet: async (key, values) =>
+        stores.settings.mergeSettingStringSet(key, values),
     };
     const { botToken } = await resolveSlackCredentials(this.env as PlatformEnv, localSettings);
     return createSlackWebClient(botToken);

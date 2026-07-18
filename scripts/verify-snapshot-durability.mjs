@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Proves per-thread config snapshots survive a process restart.
+ * Helper invoked by verify-durability.mjs to prove per-thread config snapshots
+ * survive a process restart. It remains directly runnable for focused diagnosis.
  *
  * Flow (offline, fake Slack/provider):
  *   1. Boot the built app on DB_A + STATE_A.
@@ -11,12 +12,11 @@
  *   6. Follow up in the same thread. The provider request must still carry A,
  *      while the admin effective config reports B for future threads.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  REPO_ROOT,
   assertNodeVersion,
   buildNodeServer,
   delay,
@@ -36,13 +36,10 @@ const EXEC_CHANNEL = 'C_EXEC';
 const ROOT_TS = '1782772000.000100';
 const ALPHA = 'SNAPSHOT_SCRIPT_ALPHA: original instructions for this thread.';
 const BETA = 'SNAPSHOT_SCRIPT_BETA: edited instructions for future threads.';
-const ARTIFACT_DIR = join(REPO_ROOT, 'docs', 'decisions', 'artifacts', 'snapshot-activation');
 
-const logLines = [];
 const results = [];
 
 function log(line) {
-  logLines.push(line);
   console.log(line);
 }
 
@@ -141,11 +138,6 @@ function providerBodyText(call) {
   return JSON.stringify(call?.body ?? {});
 }
 
-function writeArtifact(fileName, content) {
-  mkdirSync(ARTIFACT_DIR, { recursive: true });
-  writeFileSync(join(ARTIFACT_DIR, fileName), content);
-}
-
 const { FakeSlackBackend } = await loadFake();
 const backend = new FakeSlackBackend({ provider: { mode: 'ok', replyText: 'snapshot durability ok' } });
 
@@ -160,7 +152,7 @@ let effectiveAfterRestart;
 
 try {
   const fake = await backend.listen();
-  const serverEntry = await buildNodeServer('dist-snapshot');
+  const serverEntry = await buildNodeServer();
   log(`built node server: ${serverEntry}`);
   log(`node ${assertNodeVersion()}  DB=${dbPath}  STATE=${stateDbPath}`);
   log(`fake backend listening at ${fake.url}`);
@@ -243,19 +235,4 @@ try {
 
 const failed = results.filter((result) => !result.passed);
 log(`\n${results.length - failed.length}/${results.length} checks passed`);
-writeArtifact('snapshot-durability-run.log', `${logLines.join('\n')}\n`);
-writeArtifact(
-  'snapshot-durability-provider-bodies.json',
-  `${JSON.stringify(
-    {
-      preRestartProviderBody: firstProviderBody,
-      postRestartProviderBody: secondProviderBody,
-      effectiveBeforeRestart: effectiveBeforeRestart?.body,
-      effectiveAfterRestart: effectiveAfterRestart?.body,
-    },
-    null,
-    2,
-  )}\n`,
-);
-
 process.exit(failed.length === 0 ? 0 : 1);

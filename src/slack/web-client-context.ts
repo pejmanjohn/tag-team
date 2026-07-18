@@ -31,7 +31,7 @@ import type { NormalizedSlackTurn } from './types.ts';
  *   - thread -> conversations.replies, paginated (limit 50 first page, cursor +
  *     decremented limit on later pages, capped at DEFAULT_MAX_PAGES).
  * Any hydration failure degrades to current-message-only context so the turn
- * still completes (matching the hand-rolled lane).
+ * still completes.
  */
 export interface HydrateSlackContextOptions {
   maxMessages?: number;

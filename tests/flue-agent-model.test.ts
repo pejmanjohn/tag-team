@@ -12,6 +12,7 @@ import { registerProvider } from '@flue/runtime';
 // resolution from a test.
 import { resolveModel } from '@flue/runtime/internal';
 
+import { WORKERS_AI_CONTEXT_WINDOW_FLOOR } from '../src/app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import slackThreadAgent, { resolveAgentModel } from '../src/agents/slack-thread.ts';
 import { demoExecChannelAssignment, seededAgents } from '../src/config/seed.ts';
@@ -35,6 +36,14 @@ function modelAgent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConf
     ...overrides,
   };
 }
+
+test('the REST Workers AI registration supplies the context-window floor used for compaction', () => {
+  const resolved = resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.2');
+
+  assert.equal(resolved.provider, 'cloudflare-workers-ai');
+  assert.equal(resolved.contextWindow, WORKERS_AI_CONTEXT_WINDOW_FLOOR);
+  assert.ok(resolved.contextWindow > 0);
+});
 
 test('Flue resolves the model specifier produced by the slack-thread agent', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'chickpea-model-seed-'));
@@ -120,6 +129,29 @@ test('model policy fails with the /admin fix when an unpinned agent has no fallb
       }),
     /No model pinned for agent agent_model.*Pin a model in \/admin.*SLACK_TAG_MODEL/s,
   );
+});
+
+test('model policy warns once per unbounded Workers AI binding model', () => {
+  const model = 'cloudflare/@cf/test/unbounded-warning';
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '));
+
+  try {
+    assert.equal(resolveAgentModel(modelAgent({ model })), model);
+    assert.equal(resolveAgentModel(modelAgent({ model })), model);
+    assert.equal(
+      resolveAgentModel(
+        modelAgent({ model: 'cloudflare-workers-ai/@cf/test/bounded-rest-provider' }),
+      ),
+      'cloudflare-workers-ai/@cf/test/bounded-rest-provider',
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0] ?? '', /contextWindow 0.*auto-compaction is disabled.*grow unbounded/);
 });
 
 test('slack-thread initializes from the SQLite config store for the current state DB path', async () => {

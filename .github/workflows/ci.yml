@@ -31,8 +31,30 @@ jobs:
       # Runs typecheck plus the unit tests and the Lane B parity suite (which
       # builds dist-node/ once and spawns a fresh Flue server per scenario).
       - name: Test (Lane B parity + unit tests)
-        run: npm test
+        run: npm run test:ci
 
       # Confirm the production node artifact still builds.
       - name: Build (node target)
         run: npm run flue:build
+
+  cf-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Builds the Cloudflare bundle and exercises it under local workerd,
+      # including signed Slack events, dedupe, restart persistence, and the
+      # Durable Object alarm relay. It uses fake backends and needs no secrets.
+      - name: Verify Cloudflare runtime
+        run: npm run verify:cf-smoke

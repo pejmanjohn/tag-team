@@ -21,6 +21,7 @@ export type MemberJoinedFixtureOverrides = Omit<Partial<SlackEventFixture>, 'eve
 
 type MessageFixtureFile =
   | 'message-channel-thread-reply.json'
+  | 'message-private-channel-thread-reply.json'
   | 'message-channel-top-level.json'
   | 'message-im.json'
   | 'message-app-home.json';
@@ -43,6 +44,12 @@ export function appMention(overrides: AppMentionFixtureOverrides = {}): AppMenti
 
 export function channelThreadMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {
   return messageFixture('message-channel-thread-reply.json', overrides);
+}
+
+export function privateChannelThreadMessage(
+  overrides: MessageFixtureOverrides = {},
+): MessageFixture {
+  return messageFixture('message-private-channel-thread-reply.json', overrides);
 }
 
 export function topLevelChannelMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {

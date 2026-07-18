@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Stage-2 gate: prove the Flue lane's full turn policy works completely offline
- * under the built node server with zero external traffic. This is the fast
- * feedback loop for Task 2b; the parity suite (Stage 3) is the real gate.
+ * Prove the app's full turn policy works completely offline under the built
+ * Node server with zero external traffic. This is a focused, fast feedback
+ * loop alongside the broader parity suite.
  *
  * One built Flue server + one in-memory fake Slack/provider backend. The fake's
  * behavior knobs are reconfigured in-process between scenarios (the same knobs
- * are also exposed over `POST /__config` for the future Lane B adapter), and
+ * are also exposed over `POST /__config` for direct harness control), and
  * each scenario uses a distinct event id / message ts so the process-local claim
  * store does not dedupe across scenarios.
  *
@@ -24,8 +24,8 @@
  *   7. direct POST to the internal agent endpoint without the internal token
  *      -> 401 (the agent route is not reachable unauthenticated)
  *
- * Runs like the other Stage-4 verify scripts (a suitable Node >= 22.19 builds
- * and spawns the Flue server; the shared harness resolves a free port itself):
+ * A suitable Node >= 22.19 builds and spawns the Flue server; the shared
+ * harness resolves a free port itself:
  *   node scripts/verify-flue-offline-turn.mjs
  */
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -55,7 +55,7 @@ const ROOT_THREAD_TS = '1782770400.000100';
 const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
-// Load the Stage-0 fake backend (TypeScript) through tsx's runtime loader.
+// Load the TypeScript fake backend through tsx's runtime loader.
 const { FakeSlackBackend, STUB_REPLY_MARKER, RAW_PROVIDER_ERROR_MARKER, isMarkdownPost } =
   await loadFake();
 

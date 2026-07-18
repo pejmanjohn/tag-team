@@ -26,11 +26,11 @@ export function resolveAgentModel(
 
 // A `cloudflare/<model>` id resolves through Flue's binding-backed provider,
 // which declares no context window — Flue then treats contextWindow as 0 and
-// NEVER threshold-compacts (measured: DM transcripts grow linearly without
-// bound; probe-dm-transcript.mjs). Warn ONCE per model id so an operator who
-// runs (or pins) a non-catalog `cloudflare/*` model knows auto-compaction is
-// off. The REST `cloudflare-workers-ai/*` provider declares a floor in
-// src/app.ts and is unaffected, so it is deliberately not matched here.
+// NEVER threshold-compacts. Pre-release transcript testing measured linear DM
+// history growth on that path. Warn ONCE per model id so an operator who runs
+// (or pins) a non-catalog `cloudflare/*` model knows auto-compaction is off.
+// The REST `cloudflare-workers-ai/*` provider declares a floor in src/app.ts
+// and is unaffected, so it is deliberately not matched here.
 const warnedUnboundedCloudflareModels = new Set<string>();
 function noteResolvedModel(model: string): string {
   if (model.startsWith('cloudflare/') && !warnedUnboundedCloudflareModels.has(model)) {

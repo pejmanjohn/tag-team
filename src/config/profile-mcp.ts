@@ -14,10 +14,10 @@ import type { McpConnectionConfig } from './types.ts';
  * and instructions (frozen in the snapshot for channel threads, live-resolved
  * for DMs); secrets always resolve live from env/settings.
  *
- * GRACEFUL DEGRADE is the load-bearing contract here (deliberate divergence from
- * skillet's fail-closed): a dead or slow third-party server must never abort a
- * Slack reply. Every connection runs in parallel inside a closure that catches
- * its own errors and yields `[]`, so one failure never rejects the batch.
+ * GRACEFUL DEGRADE is the load-bearing contract here: a dead or slow
+ * third-party server must never abort a Slack reply. Every connection runs in
+ * parallel inside a closure that catches its own errors and yields `[]`, so one
+ * failure never rejects the batch.
  *
  * SECURITY INVARIANT: only `approved ∩ currently-discovered` tools are exposed.
  * Flue adapts tool names to `mcp__<id>__<tool>`; we intersect on the STRIPPED
@@ -32,6 +32,8 @@ const NODE_CLOSE_DELAY_MS = 600_000; // 10 minutes — bounded leak on the node 
 const TOOL_NAME_PREFIX = /^mcp__[^_]+(?:_[^_]+)*__/;
 
 export interface ResolveProfileMcpToolsOptions {
+  /** Immutable profile id used to scope connection secrets. */
+  agentId: string;
   // `undefined` is explicit: the slack-thread seam passes a possibly-undefined
   // env (node lane ignores it; CF supplies the binding), so the key is always
   // present but may hold undefined under exactOptionalPropertyTypes.
@@ -84,7 +86,11 @@ async function resolveOneServer(
   opts: ResolveProfileMcpToolsOptions,
 ): Promise<ToolDefinition[]> {
   try {
-    const secrets = await resolveMcpSecrets(server.id, server.headerNames, opts.env);
+    const secrets = await resolveMcpSecrets(
+      { agentId: opts.agentId, connectionId: server.id },
+      server.headerNames,
+      opts.env,
+    );
     const headers = buildMcpRequestHeaders(server.authMode, secrets);
     const connection = await connectMcp(
       {

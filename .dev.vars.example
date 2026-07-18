@@ -10,10 +10,11 @@
 # the value written here, and a placeholder would deploy as the real token.
 TAG_ADMIN_TOKEN=""
 
-# Optional: unlock the Anthropic catalog provider for a smarter default model.
-# Without it, the seeded profiles run keyless on the Workers AI binding
-# (@cf/zai-org/glm-5.2). Deliberately NOT an active line: the Deploy to
-# Cloudflare button renders every key in this file as a REQUIRED prompt
-# (verified live 2026-07-07), and this one must stay optional. Set it after
-# deploy instead:
+# Optional: add a catalog provider after deploy. Without one, the seeded Default
+# profile runs keyless on the Workers AI binding (@cf/zai-org/glm-5.2). These
+# deliberately remain comments: the Deploy to Cloudflare button renders every
+# active key in this file as a REQUIRED prompt, and provider keys must stay
+# optional. Set any provider you want after deploy instead:
 #   npx wrangler secret put ANTHROPIC_API_KEY
+#   npx wrangler secret put OPENAI_API_KEY
+#   npx wrangler secret put OPENROUTER_API_KEY

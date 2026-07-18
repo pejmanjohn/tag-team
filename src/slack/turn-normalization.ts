@@ -104,7 +104,7 @@ export function normalizeSlackTurn(
     });
   }
 
-  if (!isPublicChannel(event)) {
+  if (!isChannelConversation(event)) {
     return { status: 'ignored', reason: 'unsupported_channel_type' };
   }
   if (!event.thread_ts) {
@@ -153,8 +153,8 @@ function isDirectConversation(event: SlackMessageEvent): boolean {
   );
 }
 
-function isPublicChannel(event: SlackMessageEvent): boolean {
-  return event.channel_type === 'channel';
+function isChannelConversation(event: SlackMessageEvent): boolean {
+  return event.channel_type === 'channel' || event.channel_type === 'group';
 }
 
 function isAppAuthoredMessage(event: SlackMessageEvent): boolean {

@@ -18,21 +18,6 @@ export function renderAdminPage(): string {
 <title>Chickpea · /admin</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 9 32 32'%3E%3Ccircle cx='24' cy='25' r='15.5' fill='%23E3AC45'/%3E%3Ccircle cx='17' cy='17.5' r='4.2' fill='%23F4D084'/%3E%3Ccircle cx='18.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Ccircle cx='29.5' cy='24' r='1.9' fill='%233B3220'/%3E%3Cpath d='M19 29 Q24 32.5 29 29' fill='none' stroke='%233B3220' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='15.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3Ccircle cx='32.5' cy='28.5' r='2' fill='%23DC8A4F' opacity='0.4'/%3E%3C/svg%3E">
 <style>
-/* ============================================================================
-   CHICKPEA THEME — drop-in replacement for the <style> block in
-   src/admin/page.ts (the big one at the top of renderAdminPage()).
-
-   RULES OF ENGAGEMENT
-   - This is a STYLE-ONLY change. Same selectors, same layout system, same
-     class names, same media queries. Do not change markup, copy, or JS.
-   - Token NAMES are unchanged (--ember etc.) because inline style="" strings
-     in the render JS reference them; only their VALUES changed.
-   - The logo is applied to .avatar via background-image (the "T" text is
-     hidden with font-size:0), so no markup change is needed for the mark.
-   - Optional copy change (separate, tiny): "Tag Team" -> "Chickpea" in the
-     two brand spans + <title>. See RESTYLE_PROMPT.md.
-   ============================================================================ */
-
 @import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 :root {
@@ -238,8 +223,6 @@ button, input, textarea, select { font: inherit; }
 .brand { align-items: center; display: flex; flex: 1; gap: 10px; min-width: 0; }
 .brand-home { align-items: center; background: none; border: 0; border-radius: 10px; cursor: pointer; display: flex; gap: 10px; min-width: 0; padding: 0; }
 .brand-home:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
-/* The mark: smiling chickpea, as a background image so the markup's "T" stays.
-   Source SVG: handoff/chickpea-mark.svg */
 .avatar {
   align-items: center;
   border-radius: 0;
@@ -1109,20 +1092,6 @@ details[open].advanced summary::before {
 /* ---- profile footer (delete / add-to-channels / usage) ---- */
 .profile-foot { align-items: center; border-top: 1.5px dashed rgba(59, 50, 32, 0.15); display: flex; flex-wrap: wrap; gap: 10px; padding-top: 20px; }
 
-/* ============================================================================
-   LOGIN PAGE (second, small <style> block near the bottom of page.ts).
-   Replace only the :root values and the button colors there with:
-
-   :root { --bg:#f4ebd8; --well:#fffdf6; --line:rgba(59,50,32,0.12);
-           --text:#3b3220; --text-2:#6b5c42; --ember:#dda033;
-           --ember-bright:#e5ac44; --danger:#b5473a;
-           --font:Quicksand,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-           --radius:13px; }
-   button { background:var(--ember); box-shadow:0 2.5px 0 #b27e1f;
-            color:#3a2a08; font-weight:700; }
-   button:hover { background:var(--ember-bright); }
-   (plus the same @import font line at the top of that block)
-   ============================================================================ */
 </style>
 </head>
 <body>
@@ -1836,8 +1805,8 @@ details[open].advanced summary::before {
       '<span class="chip">' + esc(conn.requestUrl) + '</span></div>' +
       '<div><a class="btn btn-primary" href="' + esc(conn.manifestUrl) + '" target="_blank" rel="noreferrer" data-action="advance-slack-step">Create your Slack app &nearr;</a></div>' +
       // The one unrecoverable choice: Slack forces a workspace pick during
-      // creation and the manifest cannot pre-select it (the Acme-vs-Paperplane
-      // trap from the first live walkthrough).
+      // creation and the manifest cannot pre-select it. Choosing a different
+      // workspace here creates an install the configured bot cannot serve.
       '<p class="hint warn-accent">Slack will ask you to ' + slackStepBoldHint("pick a workspace") + ' &mdash; choose the one you want Chickpea in. It can&rsquo;t be changed later without reinstalling.</p>' +
       '</div></div>';
   }
@@ -2277,10 +2246,19 @@ details[open].advanced summary::before {
 
   // slugify a displayName into a connection id (lowercase, non-alnum -> '-',
   // trimmed, max 64). Used only for NEW connections; the id is immutable on edit
-  // and becomes the mcp__<id>__ tool prefix and the secret key.
+  // and becomes the mcp__<id>__ tool prefix. Secret keys add the profile id so
+  // the same connection slug can safely exist on multiple profiles.
   function connectionSlug(name) {
     var slug = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     return slug.slice(0, 64);
+  }
+
+  // Existing profiles already have an immutable id. During profile creation,
+  // derive the same prospective id saveProfile will persist so Test connection
+  // can resolve the correct profile-scoped environment override.
+  function connectionAgentId() {
+    var draft = state.profileDraft;
+    return draft && draft.id ? draft.id : slugId(draft && draft.name);
   }
 
   // Parse the URL host for the card meta line — client-side new URL() is fine
@@ -4255,7 +4233,7 @@ details[open].advanced summary::before {
     editor.testError = "";
     editor.error = "";
     render();
-    postJson("/admin/api/mcp/test", "POST", connectionTestBody(editor)).then(function (body) {
+    postJson("/admin/api/agents/" + encodeURIComponent(connectionAgentId()) + "/mcp/test", "POST", connectionTestBody(editor)).then(function (body) {
       var current = state.connectionEditor;
       if (!current) return;
       current.testing = false;
@@ -4425,7 +4403,7 @@ details[open].advanced summary::before {
   // After the profile PATCH succeeds, PUT any staged secrets and DELETE the
   // secrets of removed connections, then clear the transient state. Runs
   // fire-and-forget: a secret write failure must not block the saved profile.
-  function flushConnectionSecrets(draft) {
+  function flushConnectionSecrets(draft, agentId) {
     var pending = (draft && draft.pendingSecrets) || {};
     var removed = (draft && draft.removedConnections) || [];
     // A same-slug remove + re-add in one save stages BOTH a DELETE and a PUT for
@@ -4439,7 +4417,7 @@ details[open].advanced summary::before {
     }
     removed.forEach(function (entry) {
       if (pendingHasValue(entry.id)) return;
-      postJson("/admin/api/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
+      postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] }).catch(function () {});
     });
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
@@ -4450,7 +4428,7 @@ details[open].advanced summary::before {
       if (entry.clearBearer) body.clearBearer = true;
       // Round-trip when there is a value to store OR an orphan to clean up.
       if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined) {
-        postJson("/admin/api/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
+        postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(id), "PUT", body).catch(function () {});
       }
     });
     // Clear the transient secret state — typed values never survive a save.
@@ -4590,6 +4568,7 @@ details[open].advanced summary::before {
       body.id = slugId(draft.name);
       request = postJson("/admin/api/agents", "POST", body);
     }
+    var secretAgentId = isEdit ? draft.id : body.id;
     request.then(function () {
       state.profileError = "";
       state.profileDirty = false;
@@ -4597,7 +4576,7 @@ details[open].advanced summary::before {
       // Persist secrets by reference and clear the transient state — typed tokens
       // never survive a save. Fire-and-forget: a secret write failure must not
       // block the saved profile.
-      flushConnectionSecrets(secretsDraft);
+      flushConnectionSecrets(secretsDraft, secretAgentId);
       if (isEdit) {
         // Stay on the editor; re-clone the draft from the refreshed agent so the
         // form reflects exactly what persisted (and the save bar re-disables).

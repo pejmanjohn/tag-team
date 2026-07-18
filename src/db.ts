@@ -1,6 +1,6 @@
 import { sqlite } from '@flue/runtime/node';
 
-// File-backed persistence for the Flue lane (Stage 4). The default Node
+// File-backed persistence for the Node runtime. The framework's default Node
 // persistence is an in-memory SQLite DB that is lost on process exit, so a
 // Slack redelivery after a restart would re-run a turn and lose the thread's
 // conversation history. A file-backed adapter makes the agent's conversation

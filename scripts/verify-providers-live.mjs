@@ -1,25 +1,27 @@
 #!/usr/bin/env node
 /**
  * LIVE companion to verify-providers.mjs: the SAME signed app_mention fixture
- * answered through the Flue lane by REAL model providers. Slack stays fake
+ * answered through the built app by REAL model providers. Slack stays fake
  * (SLACK_API_URL → loopback backend); the net-guard allows ONLY the named
- * provider host per run and logs it, so the artifacts prove (a) live provider
+ * provider host per run and logs it, so the checks prove (a) live provider
  * traffic happened and (b) zero Slack egress and zero other external traffic.
  *
- * Runs whichever providers have credentials in the environment:
- *   - anthropic:            ANTHROPIC_API_KEY  (catalog default base URL)
- *   - cloudflare-workers-ai: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+ * Runs whichever supported providers have credentials in the environment:
+ *   - anthropic:              ANTHROPIC_API_KEY
+ *   - openai:                 OPENAI_API_KEY
+ *   - openrouter:             OPENROUTER_API_KEY
+ *   - cloudflare-workers-ai:  CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
  * A provider without credentials is reported as SKIPPED; the script fails if
  * NO provider could run live, or if any attempted run fails.
  *
- * On success, overwrites the STUB-labeled Stage-4 artifacts with LIVE ones:
- *   docs/decisions/artifacts/g-port-stage4/provider-{anthropic,workers-ai}-reply.md
+ * Results stay in stdout; this opt-in verifier never writes credentials,
+ * replies, or provenance artifacts into the repository.
  *
  * Typical invocation (Node >= 22.19 on PATH; creds via env, never printed):
  *   set -a; source .env.slack.local; set +a
  *   node scripts/verify-providers-live.mjs
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,7 +34,6 @@ import {
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   spawnServer,
-  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
@@ -53,20 +54,30 @@ const PROVIDERS = [
     id: 'anthropic',
     model: 'anthropic/claude-haiku-4-5',
     liveHost: 'api.anthropic.com',
-    artifact: 'provider-anthropic-reply.md',
-    wireNote:
-      'catalog `anthropic` provider, default live base URL (`https://api.anthropic.com`), anthropic-messages protocol',
     hasCreds: () => Boolean(process.env.ANTHROPIC_API_KEY),
     missing: 'ANTHROPIC_API_KEY absent',
     env: () => ({ ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }),
   },
   {
+    id: 'openai',
+    model: 'openai/gpt-4.1-mini',
+    liveHost: 'api.openai.com',
+    hasCreds: () => Boolean(process.env.OPENAI_API_KEY),
+    missing: 'OPENAI_API_KEY absent',
+    env: () => ({ OPENAI_API_KEY: process.env.OPENAI_API_KEY }),
+  },
+  {
+    id: 'openrouter',
+    model: 'openrouter/openai/gpt-4.1',
+    liveHost: 'openrouter.ai',
+    hasCreds: () => Boolean(process.env.OPENROUTER_API_KEY),
+    missing: 'OPENROUTER_API_KEY absent',
+    env: () => ({ OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY }),
+  },
+  {
     id: 'cloudflare-workers-ai',
     model: 'cloudflare-workers-ai/@cf/zai-org/glm-5.2',
     liveHost: 'api.cloudflare.com',
-    artifact: 'provider-workers-ai-reply.md',
-    wireNote:
-      'registerProvider baseUrl `https://api.cloudflare.com/client/v4/accounts/<account>/ai/v1`, openai-completions protocol',
     hasCreds: () =>
       Boolean(process.env.CLOUDFLARE_API_TOKEN) && Boolean(process.env.CLOUDFLARE_ACCOUNT_ID),
     missing: 'CLOUDFLARE_API_TOKEN and/or CLOUDFLARE_ACCOUNT_ID absent',
@@ -129,32 +140,6 @@ async function runLiveProvider(provider, serverEntry, fake, backend) {
   };
 }
 
-function writeLiveArtifact(provider, run) {
-  const today = new Date().toISOString().slice(0, 10);
-  writeFileSync(
-    stage4ArtifactPath(provider.artifact),
-    [
-      `# Provider reply — ${provider.id} (LIVE)`,
-      '',
-      `- **Provenance:** LIVE model call on ${today} via \`scripts/verify-providers-live.mjs\`.`,
-      `  Net-guard allowlisted ONLY \`${provider.liveHost}\`; the run logged`,
-      `  ${run.liveHits.length} allowed request(s) to it and blocked zero other external hosts,`,
-      '  so Slack traffic stayed entirely on the loopback fake.',
-      `- **Model:** \`${provider.model}\` (via \`SLACK_TAG_MODEL\`).`,
-      `- **Provider wiring:** ${provider.wireNote}.`,
-      '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_TAG_MODEL`.',
-      `- **End-to-end turn latency (spawn→final):** ${run.elapsedMs}ms.`,
-      '',
-      '## Reply delivered on the Slack wire',
-      '',
-      '```',
-      run.finalText,
-      '```',
-    ].join('\n') + '\n',
-  );
-}
-
 const { FakeSlackBackend } = await loadFake();
 const backend = new FakeSlackBackend({ provider: { mode: 'ok' } });
 const fake = await backend.listen();
@@ -164,10 +149,11 @@ let ranLive = 0;
 try {
   const serverEntry = await buildNodeServer();
   console.log(`built node server; node ${assertNodeVersion()}`);
+  console.log(`credential-gated live matrix: ${PROVIDERS.map((provider) => provider.id).join(', ')}`);
 
   for (const provider of PROVIDERS) {
     if (!provider.hasCreds()) {
-      console.log(`SKIP  ${provider.id}: ${provider.missing} — STUB artifact left in place`);
+      console.log(`SKIP  ${provider.id}: ${provider.missing}`);
       continue;
     }
     const run = await runLiveProvider(provider, serverEntry, fake, backend);
@@ -190,7 +176,6 @@ try {
       `liveHits=${run.liveHits.length} blocked=${run.blocked || 'none'}`,
     );
     if (delivered && wentLive && noLeaks) {
-      writeLiveArtifact(provider, run);
       ranLive += 1;
     } else if (!delivered) {
       const tail = run.serverOutput.split('\n').slice(-8).join('\n');

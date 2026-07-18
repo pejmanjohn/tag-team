@@ -86,7 +86,7 @@ export interface RunTurnOptions {
 }
 
 /**
- * Full turn lifecycle for the Flue lane, at parity with the hand-rolled lane:
+ * Full Slack turn lifecycle:
  *   1. set Assistant status (or post a durable progress placeholder on reject),
  *   2. hydrate the bounded Slack context per contextMode,
  *   3. prompt the durable agent in-process (slack/agent-dispatch.ts) with the

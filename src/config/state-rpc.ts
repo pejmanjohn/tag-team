@@ -107,6 +107,10 @@ export interface TagStateRpc {
   settingGet(key: string): Promise<StateRpcResult<string | null>>;
   settingSet(key: string, value: string): Promise<StateRpcResult<null>>;
   settingDelete(key: string): Promise<StateRpcResult<null>>;
+  settingMergeStringSet(
+    key: string,
+    values: readonly string[],
+  ): Promise<StateRpcResult<string[]>>;
   // -- turn relay (Cloudflare turn-horizon fix) ----------------------------
   /**
    * Persist a turn job and arm the alarm so `alarm()` runs it past the events

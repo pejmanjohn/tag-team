@@ -302,7 +302,7 @@ test('assignment PUT rejects a channel from a different workspace with a naming 
       const app = appWith(settings, store);
 
       const response = await putAssignment(app, {
-        workspaceId: 'T_PAPERPLANE',
+        workspaceId: 'T_OTHER',
         channelId: 'C_ELSEWHERE',
         agentId: 'agent_channels',
         enabled: true,
@@ -314,7 +314,7 @@ test('assignment PUT rejects a channel from a different workspace with a naming 
       assert.equal(body.connectedTeamName, 'Acme Inc');
       assert.match(String(body.message), /Acme Inc/);
       assert.match(String(body.message), /T_ACME/);
-      assert.match(String(body.message), /T_PAPERPLANE/);
+      assert.match(String(body.message), /T_OTHER/);
       // Nothing was written.
       assert.equal((await store.listAssignments()).length, 0);
     } finally {

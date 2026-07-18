@@ -13,13 +13,7 @@ import {
   type SlackStatusUpdate,
 } from './replies.ts';
 
-/**
- * The hand-rolled lane's sanitized provider-failure final (verbatim). The Flue
- * lane delivers this static text when the agent prompt call fails so no raw
- * provider error string can reach any Slack call (scenario S15). Kept as a
- * literal here rather than imported from the old runtime module to avoid
- * coupling the Flue lane to `src/runtime/*`.
- */
+/** Static failure copy keeps raw provider errors out of Slack (scenario S15). */
 export const PROVIDER_FAILURE_TEXT =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
@@ -36,14 +30,11 @@ export interface SlackPresenterTarget {
 
 /**
  * Slack presentation over a `@slack/web-api` WebClient. This is the sole Slack
- * presentation path: it preserves the fallback ordering that the deleted
- * hand-rolled lane once implemented (in the former
- * src/runtime/slack-thread-runner.ts + src/slack/web-api-replies.ts), now as a
- * fresh WebClient-based module.
+ * presentation path and owns the complete fallback ordering.
  *
  * Status policy: attempted per stage but latched off after the first rejection
  * for the turn (no retry storm — scenario S16); a clear is only issued when a
- * status was actually set (matching old-lane behavior).
+ * status was actually set.
  *
  * Final delivery: chat.startStream(markdown_text) -> chat.stopStream; on a
  * startStream rejection or missing recipient fields, fall back to a single

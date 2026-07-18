@@ -57,8 +57,7 @@ function detach(
 // wizard-stored setting — resolveSlackCredentials preserves the env
 // "explicitly empty = no bot user id, do not probe" knob, S14); otherwise
 // resolve once via auth.test() and cache. On auth.test failure leave it
-// undefined so message-family events fail closed in normalization (matching
-// the hand-rolled lane).
+// undefined so message-family events fail closed in normalization.
 let probedBotUserId: string | undefined;
 let botUserIdProbed = false;
 async function resolveBotUserId(env: PlatformEnv | undefined): Promise<string | undefined> {

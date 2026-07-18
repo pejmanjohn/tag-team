@@ -25,15 +25,17 @@ const workersAiBaseUrl =
     process.env.CLOUDFLARE_ACCOUNT_ID || '{CLOUDFLARE_ACCOUNT_ID}'
   }/ai/v1`;
 
+export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
+
 registerProvider('cloudflare-workers-ai', {
   baseUrl: workersAiBaseUrl,
   ...(process.env.CLOUDFLARE_API_TOKEN ? { apiKey: process.env.CLOUDFLARE_API_TOKEN } : {}),
   // Non-catalog models resolve with contextWindow 0, which Flue treats as
-  // "unknown" and therefore NEVER threshold-compacts — measured: DM transcripts
-  // grew linearly without bound (probe-dm-transcript.mjs). Declaring a
+  // "unknown" and therefore NEVER threshold-compacts. Pre-release transcript
+  // testing measured linear DM-history growth on that path. Declaring a
   // conservative floor turns auto-compaction on; if the real window is larger,
   // compaction just fires early, never overflows.
-  contextWindow: 32_768,
+  contextWindow: WORKERS_AI_CONTEXT_WINDOW_FLOOR,
   maxTokens: 2048,
 });
 recordRegisteredProvider('cloudflare-workers-ai');

@@ -13,6 +13,8 @@ export interface SettingsStore {
   getSetting(key: string): Promise<string | undefined>;
   setSetting(key: string, value: string): Promise<void>;
   deleteSetting(key: string): Promise<void>;
+  /** Atomically union string members into a JSON-array setting. */
+  mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]>;
   /** Node backend only (closes the SQLite handle); absent on RPC proxies. */
   close?(): void;
 }
@@ -60,6 +62,16 @@ export class SettingsStoreLogic {
   deleteSetting(key: string): void {
     this.db.run('DELETE FROM app_settings WHERE key = ?', key);
   }
+
+  mergeSettingStringSet(key: string, values: readonly string[]): string[] {
+    return this.db.transaction(() => {
+      const raw = this.getSetting(key);
+      const existing = raw === undefined ? [] : parseStringSet(raw);
+      const merged = [...new Set([...existing, ...values])];
+      this.setSetting(key, JSON.stringify(merged));
+      return merged;
+    });
+  }
 }
 
 /** Node backend: the target-neutral logic over `node:sqlite`, async-wrapped. */
@@ -87,4 +99,21 @@ export class SqliteSettingsStore implements SettingsStore {
   async deleteSetting(key: string): Promise<void> {
     this.logic.deleteSetting(key);
   }
+
+  async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
+    return this.logic.mergeSettingStringSet(key, values);
+  }
+}
+
+function parseStringSet(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Invalid string-set setting');
+  }
+  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === 'string')) {
+    throw new Error('Invalid string-set setting');
+  }
+  return parsed;
 }

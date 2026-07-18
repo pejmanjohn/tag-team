@@ -146,4 +146,8 @@ export class CfSettingsStore implements SettingsStore {
   async deleteSetting(key: string): Promise<void> {
     unwrap(await this.stub.settingDelete(key));
   }
+
+  async mergeSettingStringSet(key: string, values: readonly string[]): Promise<string[]> {
+    return unwrap(await this.stub.settingMergeStringSet(key, values));
+  }
 }

@@ -26,10 +26,12 @@ import {
   buildMcpRequestHeaders,
   deleteMcpSecrets,
   describeMcpSecretSources,
+  finishMcpSecretCleanup,
   mcpBearerSettingKey,
   mcpHeaderSettingKey,
   resolveMcpSecrets,
   saveMcpSecrets,
+  stageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
@@ -107,6 +109,9 @@ const ADMIN_COOKIE = 'flue_admin';
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
+const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 
 const defaultModelsSchema = v.object({
   claude: nonEmptyString,
@@ -154,7 +159,7 @@ const mcpToolInfoSchema = v.object({
 // so a private/blocked URL is refused at the write boundary too.
 const mcpServerSchema = v.pipe(
   v.object({
-    id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    id: v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)),
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
     url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
     transport: v.picklist(['streamable-http', 'sse']),
@@ -174,8 +179,8 @@ const mcpServerSchema = v.pipe(
 );
 
 // Reject duplicate connection ids at the write boundary — a per-profile id must
-// be unique (it becomes the `mcp__<id>__` tool prefix and the secret key), so a
-// collision is a turn-time footgun. Mirrors the unique-skill-names check.
+// be unique because it becomes the `mcp__<id>__` tool prefix (and the
+// profile-scoped secret-key suffix). Mirrors the unique-skill-names check.
 const mcpServersSchema = v.pipe(
   v.array(mcpServerSchema),
   v.check(
@@ -185,7 +190,7 @@ const mcpServersSchema = v.pipe(
 );
 
 const agentSchema = v.object({
-  id: nonEmptyString,
+  id: agentIdSchema,
   name: nonEmptyString,
   instructions: nonEmptyString,
   enabled: v.boolean(),
@@ -210,7 +215,7 @@ const agentPatchSchema = v.partial(
 // Test-connection payload: the UNSAVED form. Secrets are transient (never
 // persisted here) and merged over stored/env at handler time.
 const mcpTestSchema = v.object({
-  id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+  id: v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)),
   url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
   transport: v.picklist(['streamable-http', 'sse']),
   authMode: v.picklist(['none', 'bearer']),
@@ -560,7 +565,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // unauthorized, timeout, ...) is HTTP 200 with a classified `{ ok: false }`
   // envelope — the client renders the safe message inline, and a raw error
   // string (which could leak internals) never crosses this boundary.
-  app.post('/admin/api/mcp/test', async (c) => {
+  app.post('/admin/api/agents/:agentId/mcp/test', async (c) => {
+    const agentId = c.req.param('agentId');
+    if (!AGENT_ID_PATTERN.test(agentId)) {
+      return invalidRequest(c);
+    }
     const body = await readJson(c.req);
     const parsed = v.safeParse(mcpTestSchema, body);
     if (!parsed.success) {
@@ -577,10 +586,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    // Start from stored/env secrets for this id, then let any value typed into
-    // the unsaved form win — the operator is testing exactly what they typed.
+    // Start from stored/env secrets for this profile-local connection, then let
+    // any value typed into the unsaved form win — the operator is testing
+    // exactly what they typed.
     const resolved = await resolveMcpSecrets(
-      input.id,
+      { agentId, connectionId: input.id },
       // Union of the connection's known header names and any typed this session,
       // so a stored value backs a header the operator didn't re-enter.
       [...new Set([...(input.headerNames ?? []), ...Object.keys(input.headers ?? {})])],
@@ -617,9 +627,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // response reports source only (`env`/`stored`/`missing`) — values are never
   // echoed back. The profile PATCH path never touches settings; this is the one
   // secret-write choke point alongside DELETE below.
-  app.put('/admin/api/mcp/secrets/:id', async (c) => {
-    const id = c.req.param('id');
-    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+  app.put('/admin/api/agents/:agentId/mcp/secrets/:connectionId', async (c) => {
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
       return invalidRequest(c);
     }
     const body = await readJson(c.req);
@@ -629,9 +640,42 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const input = parsed.output;
     const platformEnv = c.env as PlatformEnv | undefined;
+    const configStore = store(c);
     const settingsStore = settings(c);
+    const ref = { agentId, connectionId };
+    let connection: CustomAgentConfig['mcpServers'][number] | undefined;
+    try {
+      connection = (await configStore.getAgent(agentId)).mcpServers.find(
+        (server) => server.id === connectionId,
+      );
+    } catch (err) {
+      if (err instanceof UnknownAgentError) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      return internalError(c, err);
+    }
+    if (!connection) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+
+    const writtenHeaderNames = Object.keys(input.headers ?? {});
+    const allowedHeaderNames = new Set(connection.headerNames);
+    if (writtenHeaderNames.some((name) => !allowedHeaderNames.has(name))) {
+      return invalidRequest(c);
+    }
+    const cleanupHeaderNames = [
+      ...new Set([...connection.headerNames, ...(input.removeHeaderNames ?? [])]),
+    ];
+    await stageMcpSecretCleanup(
+      agentId,
+      [
+        mcpBearerSettingKey(ref),
+        ...cleanupHeaderNames.map((name) => mcpHeaderSettingKey(ref, name)),
+      ],
+      settingsStore,
+    );
     await saveMcpSecrets(
-      id,
+      ref,
       {
         ...(input.bearerToken !== undefined ? { bearerToken: input.bearerToken } : {}),
         ...(input.headers !== undefined ? { headers: input.headers } : {}),
@@ -640,18 +684,60 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settingsStore,
     );
     if (input.clearBearer) {
-      await settingsStore.deleteSetting(mcpBearerSettingKey(id));
+      await settingsStore.deleteSetting(mcpBearerSettingKey(ref));
     }
     for (const name of input.removeHeaderNames ?? []) {
-      await settingsStore.deleteSetting(mcpHeaderSettingKey(id, name));
+      await settingsStore.deleteSetting(mcpHeaderSettingKey(ref, name));
     }
-    const sources = await describeMcpSecretSources(id, input.headerNames, platformEnv, settingsStore);
+
+    let currentConnection: CustomAgentConfig['mcpServers'][number] | undefined;
+    try {
+      currentConnection = (await configStore.getAgent(agentId)).mcpServers.find(
+        (server) => server.id === connectionId,
+      );
+    } catch (err) {
+      if (!(err instanceof UnknownAgentError)) {
+        return internalError(c, err);
+      }
+      try {
+        // The profile disappeared after the pre-write check. Remove this
+        // connection explicitly in case a concurrent profile cleanup consumed
+        // the marker just before these writes landed, then finish any marker
+        // that remains for the rest of the deleted profile.
+        await deleteMcpSecrets(ref, cleanupHeaderNames, platformEnv, settingsStore);
+        await finishMcpSecretCleanup(agentId, settingsStore);
+        return c.json({ error: 'not_found' }, 404);
+      } catch (cleanupError) {
+        return internalError(c, cleanupError);
+      }
+    }
+    if (!currentConnection) {
+      try {
+        await deleteMcpSecrets(ref, cleanupHeaderNames, platformEnv, settingsStore);
+      } catch (cleanupError) {
+        return internalError(c, cleanupError);
+      }
+      return c.json({ error: 'not_found' }, 404);
+    }
+    const currentHeaderNames = new Set(currentConnection.headerNames);
+    const headersRemovedDuringWrite = writtenHeaderNames.filter(
+      (name) => !currentHeaderNames.has(name),
+    );
+    if (headersRemovedDuringWrite.length > 0) {
+      for (const name of headersRemovedDuringWrite) {
+        await settingsStore.deleteSetting(mcpHeaderSettingKey(ref, name));
+      }
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+
+    const sources = await describeMcpSecretSources(ref, input.headerNames, platformEnv, settingsStore);
     return c.json(sources);
   });
 
-  app.delete('/admin/api/mcp/secrets/:id', async (c) => {
-    const id = c.req.param('id');
-    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+  app.delete('/admin/api/agents/:agentId/mcp/secrets/:connectionId', async (c) => {
+    const agentId = c.req.param('agentId');
+    const connectionId = c.req.param('connectionId');
+    if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
       return invalidRequest(c);
     }
     const body = await readJson(c.req);
@@ -660,7 +746,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
-    await deleteMcpSecrets(id, parsed.output.headerNames, platformEnv, settings(c));
+    await deleteMcpSecrets(
+      { agentId, connectionId },
+      parsed.output.headerNames,
+      platformEnv,
+      settings(c),
+    );
     return c.json({ ok: true });
   });
 
@@ -710,6 +801,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.delete('/admin/api/agents/:id', async (c) => {
     const configStore = store(c);
     const agentId = c.req.param('id');
+    let agent: CustomAgentConfig;
+    try {
+      agent = await configStore.getAgent(agentId);
+    } catch (err) {
+      if (!(err instanceof UnknownAgentError)) {
+        return internalError(c, err);
+      }
+      try {
+        const resumed = await finishMcpSecretCleanup(agentId, settings(c));
+        return resumed ? c.body(null, 204) : c.json({ error: 'not_found' }, 404);
+      } catch (cleanupError) {
+        return internalError(c, cleanupError);
+      }
+    }
+
     const references = await configStore.listAssignmentsForAgent(agentId);
     if (references.length > 0) {
       return c.json(
@@ -720,34 +826,55 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         409,
       );
     }
-    // Read the connection list BEFORE deleting so a successful delete can sweep
-    // each Connection's secrets from the settings store — the client's own
-    // per-connection DELETE only fires on a Remove-then-Save, not on a whole
-    // profile delete, so this is the server-side backstop against orphaned
-    // `mcp.<id>.*` secrets.
-    let mcpServers: CustomAgentConfig['mcpServers'] = [];
-    try {
-      mcpServers = (await configStore.getAgent(agentId)).mcpServers;
-    } catch (err) {
-      if (!(err instanceof UnknownAgentError)) {
-        return internalError(c, err);
+    // Persist the cleanup inventory before deleting the profile. The marker is
+    // independent of the config row, so settings cleanup can be retried after a
+    // partial failure or an ambiguous DO/RPC response where the delete committed
+    // but the caller only observed an error.
+    const settingsStore = settings(c);
+    const secretKeys = new Set<string>();
+    for (const server of agent.mcpServers) {
+      const ref = { agentId, connectionId: server.id };
+      secretKeys.add(mcpBearerSettingKey(ref));
+      for (const name of server.headerNames) {
+        secretKeys.add(mcpHeaderSettingKey(ref, name));
       }
     }
     try {
-      const deleted = await configStore.deleteAgent(agentId);
-      if (!deleted) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      const platformEnv = c.env as PlatformEnv | undefined;
-      const settingsStore = settings(c);
-      for (const server of mcpServers) {
-        await deleteMcpSecrets(server.id, server.headerNames, platformEnv, settingsStore);
-      }
-      return c.body(null, 204);
+      await stageMcpSecretCleanup(agentId, [...secretKeys], settingsStore);
     } catch (err) {
+      return internalError(c, err);
+    }
+
+    try {
+      // A false return means another request removed the row after our initial
+      // read. Either way the profile is absent and the staged cleanup is safe.
+      await configStore.deleteAgent(agentId);
+    } catch (err) {
+      try {
+        await configStore.getAgent(agentId);
+      } catch (inspectionError) {
+        if (inspectionError instanceof UnknownAgentError) {
+          // The delete committed but its response was lost. Continue using the
+          // durable marker rather than restoring secrets into an orphaned scope.
+          try {
+            await finishMcpSecretCleanup(agentId, settingsStore);
+            return c.body(null, 204);
+          } catch (cleanupError) {
+            return internalError(c, cleanupError);
+          }
+        }
+        return internalError(c, inspectionError);
+      }
       if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
       }
+      return internalError(c, err);
+    }
+
+    try {
+      await finishMcpSecretCleanup(agentId, settingsStore);
+      return c.body(null, 204);
+    } catch (err) {
       return internalError(c, err);
     }
   });
@@ -787,9 +914,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let authoritativeLabel: string | undefined;
     if (botToken && !isWildcard) {
       const teamInfo = await resolveTeamInfoSafely(platformEnv, settingsStore);
-      // (a) The channel must live in the CONNECTED workspace. This is the miss
-      //     that silently accepted a Paperplane Labs channel into an Acme Inc
-      //     install: name the connected workspace so the fix is obvious.
+      // (a) The channel must live in the CONNECTED workspace. Without this
+      //     check, a channel id copied from another workspace could be accepted
+      //     even though the configured bot can never reach it.
       if (teamInfo.teamId && input.workspaceId !== teamInfo.teamId) {
         return c.json(
           {

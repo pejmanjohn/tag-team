@@ -1,24 +1,22 @@
 #!/usr/bin/env node
 /**
- * Stage-4 gate (b): multi-provider answering through Flue's registry.
+ * Offline multi-provider verification through Flue's registry.
  *
- * The SAME signed app_mention fixture is answered twice through the Flue lane —
+ * The SAME signed app_mention fixture is answered twice through the built app —
  * once via the `anthropic` provider (anthropic-messages wire protocol) and once
  * via `cloudflare-workers-ai` (openai-completions wire protocol) — proving one
  * agent reaches two providers by only swapping SLACK_TAG_MODEL.
  *
- * PROVENANCE (honest live-vs-stub): this offline harness intentionally runs
- * against local fake provider endpoints. Replies must stay labeled STUB unless
- * a future operator wires live credentials and records fresh live evidence.
- * A clearly labeled stub is acceptable here; a mislabeled one is not.
+ * This offline harness intentionally runs against local fake provider
+ * endpoints, and every corresponding assertion is explicitly labeled STUB.
  *
- * Offline, net-guarded. Saves labeled replies to
- * docs/decisions/artifacts/g-port-stage4/provider-{anthropic,workers-ai}-reply.md
+ * Offline and net-guarded. Assertion summaries are printed to stdout; the
+ * harness does not write repository artifacts.
  *
  * Run with Node >= 22.19:
  *   node scripts/verify-providers.mjs
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,7 +29,6 @@ import {
   postSignedEvent,
   seedOfflineDemoChannelConfig,
   spawnServer,
-  stage4ArtifactPath,
   stopChild,
   waitForFinals,
   waitForReady,
@@ -149,61 +146,6 @@ try {
   const attempted = existsSync(netGuardLog) ? readFileSync(netGuardLog, 'utf8').trim() : '';
   record('NET_GUARD_LOG empty -> zero external traffic', attempted === '', attempted || 'none');
 
-  // --- Artifacts. ---
-  // A LIVE-provenance artifact is stronger evidence than this offline stub run;
-  // only scripts/verify-providers-live.mjs may replace it (or delete the file
-  // first to force a stub rewrite).
-  const writeStubArtifact = (fileName, content) => {
-    const artifactPath = stage4ArtifactPath(fileName);
-    if (existsSync(artifactPath) && readFileSync(artifactPath, 'utf8').includes('**Provenance:** LIVE')) {
-      console.log(`kept LIVE artifact ${fileName} (offline stub run does not downgrade live evidence)`);
-      return;
-    }
-    writeFileSync(artifactPath, content);
-  };
-  writeStubArtifact(
-    'provider-anthropic-reply.md',
-    [
-      '# Provider reply — anthropic (STUB)',
-      '',
-      '- **Provenance:** STUB. The harness points `ANTHROPIC_BASE_URL` at a',
-      '  local fake provider endpoint and uses a dummy SDK key that the fake ignores.',
-      '  No external Anthropic call is expected during this offline check.',
-      '- **Model:** `anthropic/claude-haiku-4-5` (via `SLACK_TAG_MODEL`).',
-      '- **Provider wire protocol:** `POST <base>/v1/messages` streaming SSE',
-      `  (\`message_start\` → \`content_block_delta\` → \`message_stop\`). Wire methods observed: \`${anthropic.wireMethods.join(', ')}\`.`,
-      '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_TAG_MODEL`.',
-      '',
-      '## Reply delivered on the Slack wire',
-      '',
-      '```',
-      anthropic.finalText,
-      '```',
-    ].join('\n') + '\n',
-  );
-  writeStubArtifact(
-    'provider-workers-ai-reply.md',
-    [
-      '# Provider reply — cloudflare-workers-ai (STUB)',
-      '',
-      '- **Provenance:** STUB. The harness points `CLOUDFLARE_WORKERS_AI_BASE_URL`',
-      '  at a local fake OpenAI-compatible endpoint and uses a dummy token that',
-      '  the fake ignores. No external Cloudflare call is expected during this',
-      '  offline check.',
-      '- **Model:** `cloudflare-workers-ai/@cf/zai-org/glm-5.2` (via `SLACK_TAG_MODEL`).',
-      '- **Provider wire protocol:** `POST <base>/v1/chat/completions` streaming SSE',
-      `  (OpenAI chat.completion.chunk deltas). Wire methods observed: \`${workersAi.wireMethods.join(', ')}\`.`,
-      '- **Routing:** the SAME `app-mention.json` fixture, answered through the Flue',
-      '  lane by swapping only `SLACK_TAG_MODEL`.',
-      '',
-      '## Reply delivered on the Slack wire',
-      '',
-      '```',
-      workersAi.finalText,
-      '```',
-    ].join('\n') + '\n',
-  );
 } catch (error) {
   record('providers harness', false, error instanceof Error ? error.stack : String(error));
 } finally {

@@ -23,20 +23,6 @@ function tempDbPath(): { dir: string; path: string } {
   return { dir, path: join(dir, 'state.db') };
 }
 
-function withNavigatorUserAgent<T>(userAgent: string, run: () => T): T {
-  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: { userAgent },
-  });
-  try {
-    return run();
-  } finally {
-    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
-    else delete (globalThis as { navigator?: unknown }).navigator;
-  }
-}
-
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
   return {
     id: 'agent_test',
@@ -124,62 +110,6 @@ test('SqliteConfigStore round-trips non-empty skills through create and update',
   store.close();
 });
 
-test('migration backfills skills_json as [] on a pre-skills database', async () => {
-  const { dir, path } = tempDbPath();
-  try {
-    // Legacy schema: config_agents WITHOUT skills_json, schema_version = 2.
-    const legacy = new DatabaseSync(path);
-    legacy.exec('CREATE TABLE config_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    legacy.exec(
-      `CREATE TABLE config_agents (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
-        instructions TEXT NOT NULL, enabled INTEGER NOT NULL, model TEXT,
-        default_models_json TEXT NOT NULL, allowed_tools_json TEXT NOT NULL)`,
-    );
-    legacy.exec(
-      `CREATE TABLE config_assignments (
-        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL, channel_label TEXT, channel_prompt_addendum TEXT,
-        PRIMARY KEY (workspace_id, channel_id))`,
-    );
-    legacy
-      .prepare(
-        `INSERT INTO config_agents
-         (id, name, description, instructions, enabled, model, default_models_json, allowed_tools_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        'agent_legacy',
-        'Legacy',
-        'A pre-skills agent',
-        'Legacy instructions',
-        1,
-        null,
-        '{"claude":"anthropic/x","workers-ai":"@cf/y"}',
-        '["lookup_channel_brief"]',
-      );
-    legacy.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run('schema_version', '2');
-    legacy
-      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-      .run('config_seeded_v1', new Date().toISOString());
-    legacy.close();
-
-    // Opening the store runs migration v3: adds skills_json, existing rows read as [].
-    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    const migrated = await store.getAgent('agent_legacy');
-    assert.deepEqual(migrated.skills, []);
-
-    // And the migrated row now accepts skills.
-    const withSkill = await store.updateAgent('agent_legacy', {
-      skills: [{ name: 'triage', description: 'Triage.', instructions: '# t', enabled: true }],
-    });
-    assert.equal(withSkill.skills.length, 1);
-    store.close();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test('SqliteConfigStore round-trips non-empty mcpServers through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [], assignments: [] });
   const withServers = agent({
@@ -227,79 +157,6 @@ test('SqliteConfigStore round-trips non-empty mcpServers through create and upda
   assert.deepEqual((await store.getAgent(withServers.id)).mcpServers, nextServers);
 
   store.close();
-});
-
-test('migration backfills mcp_servers_json as [] on a pre-v4 database', async () => {
-  const { dir, path } = tempDbPath();
-  try {
-    // Legacy schema: config_agents WITH skills_json but WITHOUT mcp_servers_json,
-    // schema_version = 3 (post-skills, pre-connections).
-    const legacy = new DatabaseSync(path);
-    legacy.exec('CREATE TABLE config_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    legacy.exec(
-      `CREATE TABLE config_agents (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
-        instructions TEXT NOT NULL, enabled INTEGER NOT NULL, model TEXT,
-        default_models_json TEXT NOT NULL, allowed_tools_json TEXT NOT NULL,
-        skills_json TEXT NOT NULL DEFAULT '[]')`,
-    );
-    legacy.exec(
-      `CREATE TABLE config_assignments (
-        workspace_id TEXT NOT NULL, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL, channel_label TEXT, channel_prompt_addendum TEXT,
-        PRIMARY KEY (workspace_id, channel_id))`,
-    );
-    legacy
-      .prepare(
-        `INSERT INTO config_agents
-         (id, name, description, instructions, enabled, model, default_models_json, allowed_tools_json, skills_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        'agent_legacy',
-        'Legacy',
-        'A pre-connections agent',
-        'Legacy instructions',
-        1,
-        null,
-        '{"claude":"anthropic/x","workers-ai":"@cf/y"}',
-        '["lookup_channel_brief"]',
-        '[]',
-      );
-    legacy.prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)').run('schema_version', '3');
-    legacy
-      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-      .run('config_seeded_v1', new Date().toISOString());
-    legacy.close();
-
-    // Opening the store runs migration v4: adds mcp_servers_json, existing rows read as [].
-    const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    const migrated = await store.getAgent('agent_legacy');
-    assert.deepEqual(migrated.mcpServers, []);
-
-    // And the migrated row now accepts mcpServers.
-    const withServer = await store.updateAgent('agent_legacy', {
-      mcpServers: [
-        {
-          id: 'srv',
-          displayName: 'Srv',
-          url: 'https://mcp.example.com/mcp',
-          transport: 'streamable-http',
-          authMode: 'none',
-          headerNames: [],
-          enabled: true,
-          lifecycleStatus: 'ready',
-          statusText: '',
-          discoveredTools: [],
-          allowedTools: [],
-        },
-      ],
-    });
-    assert.equal(withServer.mcpServers.length, 1);
-    store.close();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test('SqliteConfigStore blocks deleting agents that still have assignments', async () => {
@@ -416,160 +273,50 @@ test('SqliteConfigStore survives restart on a file database', async () => {
   }
 });
 
-test('SqliteConfigStore migrates pre-existing assignment tables to support channel labels', async () => {
+test('fresh databases start at the complete public v1 config schema', () => {
   const { dir, path } = tempDbPath();
-  const createdAgent = agent({ id: 'agent_legacy' });
 
   try {
-    const legacy = new DatabaseSync(path);
-    legacy.exec(`
-      CREATE TABLE config_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE config_agents (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT NOT NULL,
-        instructions TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        model TEXT,
-        default_models_json TEXT NOT NULL,
-        allowed_tools_json TEXT NOT NULL
-      );
-      CREATE TABLE config_assignments (
-        workspace_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        channel_prompt_addendum TEXT,
-        PRIMARY KEY (workspace_id, channel_id)
-      );
-    `);
-    legacy
-      .prepare(
-        `INSERT INTO config_agents (
-          id, name, description, instructions, enabled, model,
-          default_models_json, allowed_tools_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        createdAgent.id,
-        createdAgent.name,
-        'Legacy profile',
-        createdAgent.instructions,
-        1,
-        null,
-        JSON.stringify(createdAgent.defaultModels),
-        '["lookup_channel_brief"]',
-      );
-    legacy
-      .prepare(
-        `INSERT INTO config_assignments (
-          workspace_id, channel_id, agent_id, enabled, channel_prompt_addendum
-        ) VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run('T_LEGACY', 'C_LEGACY', createdAgent.id, 1, 'Legacy channel addendum.');
-    legacy.close();
-
     const store = new SqliteConfigStore(path, { agents: [], assignments: [] });
-    assert.deepEqual(await store.getAssignment('T_LEGACY', 'C_LEGACY'), {
-      workspaceId: 'T_LEGACY',
-      channelId: 'C_LEGACY',
-      agentId: createdAgent.id,
-      enabled: true,
-      channelPromptAddendum: 'Legacy channel addendum.',
-    });
-
-    const labeled = await store.putAssignment({
-      workspaceId: 'T_LEGACY',
-      channelId: 'C_LEGACY',
-      agentId: createdAgent.id,
-      enabled: true,
-      channelLabel: 'eng-releases',
-      channelPromptAddendum: 'Legacy channel addendum.',
-    });
-    assert.equal(labeled.channelLabel, 'eng-releases');
-    assert.equal((await store.getAssignment('T_LEGACY', 'C_LEGACY'))?.channelLabel, 'eng-releases');
     store.close();
 
-    // The v5/v6 migrations drop the removed allowed_tools_json and description
-    // columns from the legacy DB, and the row still reads back through the
-    // current schema.
-    const migrated = new DatabaseSync(path);
-    const columns = migrated
-      .prepare('SELECT name FROM pragma_table_info(?)')
+    const db = new DatabaseSync(path);
+    const version = db
+      .prepare('SELECT value FROM config_meta WHERE key = ?')
+      .get('schema_version') as { value: string };
+    const agentColumns = db
+      .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
       .all('config_agents') as Array<{ name: string }>;
-    migrated.close();
-    assert.ok(!columns.some((column) => column.name === 'allowed_tools_json'));
-    assert.ok(!columns.some((column) => column.name === 'description'));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
+    const assignmentColumns = db
+      .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
+      .all('config_assignments') as Array<{ name: string }>;
+    db.close();
 
-test('Cloudflare v2 migration pins an unpinned legacy Default', async () => {
-  const { dir, path } = tempDbPath();
-
-  try {
-    const legacy = new DatabaseSync(path);
-    legacy.exec(`
-      CREATE TABLE config_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE config_agents (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT NOT NULL,
-        instructions TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        model TEXT,
-        default_models_json TEXT NOT NULL,
-        allowed_tools_json TEXT NOT NULL
-      );
-      CREATE TABLE config_assignments (
-        workspace_id TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        channel_label TEXT,
-        channel_prompt_addendum TEXT,
-        PRIMARY KEY (workspace_id, channel_id)
-      );
-    `);
-    legacy
-      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-      .run('schema_version', '1');
-    legacy
-      .prepare('INSERT INTO config_meta (key, value) VALUES (?, ?)')
-      .run('config_seeded_v1', '2026-07-07T00:00:00.000Z');
-    const legacyDefault = agent({ id: 'agent_default', name: 'Default' });
-    legacy
-      .prepare(
-        `INSERT INTO config_agents (
-          id, name, description, instructions, enabled, model,
-          default_models_json, allowed_tools_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        legacyDefault.id,
-        legacyDefault.name,
-        'Legacy profile',
-        legacyDefault.instructions,
-        1,
-        null,
-        JSON.stringify(legacyDefault.defaultModels),
-        '["lookup_channel_brief"]',
-      );
-    legacy.close();
-
-    const store = withNavigatorUserAgent(
-      'Cloudflare-Workers',
-      () => new SqliteConfigStore(path, { agents: [], assignments: [] }),
+    assert.equal(version.value, '1');
+    assert.deepEqual(
+      agentColumns.map(({ name }) => name),
+      [
+        'id',
+        'name',
+        'instructions',
+        'enabled',
+        'model',
+        'default_models_json',
+        'skills_json',
+        'mcp_servers_json',
+      ],
     );
-    assert.equal((await store.getAgent('agent_default')).model, SEED_CLOUDFLARE_MODEL_PIN);
-    store.close();
+    assert.deepEqual(
+      assignmentColumns.map(({ name }) => name),
+      [
+        'workspace_id',
+        'channel_id',
+        'agent_id',
+        'enabled',
+        'channel_label',
+        'channel_prompt_addendum',
+      ],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -12,6 +12,7 @@ import {
 import {
   invalidateProviderModelCache,
   listProviderModels,
+  ProviderUnreachableError,
   WORKERS_AI_DEFAULT_FAVORITES,
 } from '../src/config/provider-models.ts';
 import { forgetRegisteredProvider } from '../src/config/providers.ts';
@@ -81,6 +82,29 @@ async function withFetch<T>(fetchImpl: typeof fetch, run: () => Promise<T>): Pro
     return await run();
   } finally {
     globalThis.fetch = previous;
+  }
+}
+
+async function assertProviderDeadline(
+  run: () => Promise<unknown>,
+  provider: 'openrouter' | 'workers-ai',
+  timeoutMs: number,
+): Promise<void> {
+  let guardTimer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_resolve, reject) => {
+    guardTimer = setTimeout(() => reject(new Error('provider deadline did not settle')), 100);
+  });
+
+  try {
+    await assert.rejects(
+      () => Promise.race([run(), guard]),
+      (err: unknown) =>
+        err instanceof ProviderUnreachableError &&
+        err.provider === provider &&
+        err.message === `Provider ${provider} request timed out after ${timeoutMs}ms`,
+    );
+  } finally {
+    if (guardTimer) clearTimeout(guardTimer);
   }
 }
 
@@ -313,6 +337,79 @@ test('provider models proxy caches OpenAI chat models and refresh bypasses the c
   } finally {
     close();
   }
+});
+
+test('provider model requests abort when the upstream never responds', async () => {
+  invalidateProviderModelCache('openrouter');
+  const hangingFetch = (async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    assert.ok(init?.signal, 'provider request must carry an abort signal');
+    return new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener(
+        'abort',
+        () => reject(init.signal?.reason ?? new DOMException('Aborted', 'AbortError')),
+        { once: true },
+      );
+    });
+  }) as typeof fetch;
+
+  await withFetch(hangingFetch, async () => {
+    await assert.rejects(
+      () => listProviderModels('openrouter', { refresh: true, timeoutMs: 10 }),
+      (err: unknown) =>
+        err instanceof ProviderUnreachableError &&
+        err.message === 'Provider openrouter request timed out after 10ms',
+    );
+  });
+});
+
+test('provider model deadline includes response body consumption', async () => {
+  invalidateProviderModelCache('openrouter');
+  let releaseBody = () => {};
+  const stalledBodyFetch = (async (): Promise<Response> => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"data":['));
+        releaseBody = () => controller.error(new Error('test cleanup'));
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    await withFetch(stalledBodyFetch, () =>
+      assertProviderDeadline(
+        () => listProviderModels('openrouter', { refresh: true, timeoutMs: 10 }),
+        'openrouter',
+        10,
+      ),
+    );
+  } finally {
+    releaseBody();
+  }
+});
+
+test('Workers AI binding model listing respects the provider deadline', async () => {
+  invalidateProviderModelCache('workers-ai');
+  await assertProviderDeadline(
+    () =>
+      listProviderModels('workers-ai', {
+        env: {
+          AI: {
+            models: async () => new Promise<never>(() => {}),
+          },
+        } as PlatformEnv,
+        refresh: true,
+        timeoutMs: 10,
+      }),
+    'workers-ai',
+    10,
+  );
 });
 
 test('Workers AI model listing uses model names from binding and REST search results', async () => {

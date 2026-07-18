@@ -473,7 +473,7 @@ export class FakeSlackBackend {
     // `cloudflare-workers-ai` providers. The official OpenAI SDK posts to
     // `<base>/chat/completions` and streams SSE.
     const isOpenAiCompletions = !isSlack && pathname.endsWith('/chat/completions');
-    // Anthropic-messages surface (Stage 4, part b). The official Anthropic SDK
+    // Anthropic-messages surface. The official Anthropic SDK
     // posts to `<base>/v1/messages` and pi-ai parses the SSE event stream.
     const isAnthropicMessages = !isSlack && pathname.endsWith('/v1/messages');
     let method: string;
@@ -501,7 +501,7 @@ export class FakeSlackBackend {
         return providerAdmin;
       }
       if (isOpenAiCompletions) {
-        return this.openAiCompletionsResponse(body);
+        return this.openAiCompletionsResponse();
       }
       if (isAnthropicMessages) {
         return this.anthropicMessagesResponse();
@@ -791,7 +791,7 @@ export class FakeSlackBackend {
    * `stream: true`, so the reply is delivered as `text/event-stream` chunks
    * terminated by `data: [DONE]`.
    */
-  private openAiCompletionsResponse(body: Record<string, unknown>): RouteResult {
+  private openAiCompletionsResponse(): RouteResult {
     if (this.providerMode === 'http_500') {
       return {
         status: 500,
@@ -815,7 +815,7 @@ export class FakeSlackBackend {
   }
 
   /**
-   * Anthropic-messages streaming response (Stage 4, part b). pi-ai's anthropic
+   * Anthropic-messages streaming response. pi-ai's anthropic
    * client posts to `<base>/v1/messages` and parses the SSE event stream
    * (`message_start` → `content_block_*` → `message_delta` → `message_stop`).
    * Text-only; the tool loop runs through the openai-completions surface.
