@@ -1393,6 +1393,7 @@ function toMcpServers(
     })),
     allowedTools: server.allowedTools,
     ...(server.lastCheckedAt !== undefined ? { lastCheckedAt: server.lastCheckedAt } : {}),
+    ...(server.presetId !== undefined ? { presetId: server.presetId } : {}),
   }));
 }
 
